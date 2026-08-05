@@ -14,24 +14,24 @@
   "dependencies": {
     "@gsap/react": "^2.1.2",
     "flexsearch": "^0.8.212",
-    "fumadocs-core": "latest",
-    "fumadocs-mdx": "latest",
-    "fumadocs-ui": "latest",
+    "fumadocs-core": "^16.11.1",
+    "fumadocs-mdx": "^15.1.0",
+    "fumadocs-ui": "^16.11.1",
     "gsap": "^3.15.0",
-    "lucide-react": "latest",
+    "lucide-react": "^1.23.0",
     "mermaid": "^11.16.0",
-    "next": "latest",
-    "react": "^19",
-    "react-dom": "^19"
+    "next": "16.2.12",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
   },
   "devDependencies": {
-    "@tailwindcss/postcss": "latest",
-    "@types/node": "latest",
-    "@types/react": "latest",
-    "@types/react-dom": "latest",
+    "@tailwindcss/postcss": "^4.3.2",
+    "@types/node": "^26.1.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
     "cross-env": "^10.1.0",
     "playwright": "^1.61.1",
-    "tailwindcss": "latest",
-    "typescript": "latest"
+    "tailwindcss": "^4.3.2",
+    "typescript": "^6.0.3"
   }
 }
