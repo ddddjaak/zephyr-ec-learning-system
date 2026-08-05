@@ -147,12 +147,20 @@ espi_send_vw(vw_index, data);         // 发送 VW
 #include <zephyr/drivers/espi.h>
 const struct device *espi_dev = DEVICE_DT_GET(DT_NODELABEL(espi0));
 
-// VW 回调通过 espi driver API 注册
-espi_add_callback(espi_dev, espi_vw_handler, ESPI_BUS_EVENT_VWIRE_RECEIVED);
+// VW 回调：先初始化 callback，再注册到设备
+static void espi_vw_handler(const struct device *dev, struct espi_callback *cb,
+                            enum espi_bus_event evt)
+{
+    /* VW 事件处理 */
+}
 
-// 发送 VW
-struct espi_vw_packet vw = { .index = ESPI_VW_PLTRST, .val = 1 };
-espi_send_vw(espi_dev, &vw);
+static struct espi_callback vw_cb;
+
+espi_init_callback(&vw_cb, espi_vw_handler, ESPI_BUS_EVENT_VWIRE_RECEIVED);
+espi_add_callback(espi_dev, &vw_cb);
+
+// 发送 VW（enum espi_vwire_signal + 电平，电平 1 = 高/释放）
+espi_send_vw(espi_dev, ESPI_VWIRE_SIGNAL_PLTRST, 1);
 ```
 
 ### 4. 键盘扫描

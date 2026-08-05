@@ -127,8 +127,8 @@ PWM 用于风扇转速调节、背光亮度控制和 LED 呼吸灯。使用 `PWM
 
 static const struct pwm_dt_spec fan_pwm = PWM_DT_SPEC_GET(DT_NODELABEL(pwm0));
 
-/* 25kHz周期，50%占空比（12.5kHz脉宽） */
-int ret = pwm_set_dt(&fan_pwm, PWM_HZ(25000), PWM_HZ(12500));
+/* 25kHz周期，50%占空比（脉宽 = 周期/2 = 20µs） */
+int ret = pwm_set_dt(&fan_pwm, PWM_HZ(25000), PWM_HZ(25000) / 2);
 ```
 
 使用前需在 `prj.conf` 中启用 `CONFIG_PWM=y`。

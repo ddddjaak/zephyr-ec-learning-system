@@ -30,17 +30,23 @@ EC 系统中有三种典型任务类型：
 | 中频系统任务 | 100ms | 2048 字节 | 电池监控 `battery_thread` |
 | 事件驱动任务 | 无固定周期 | 2048 字节 | OOB 管理 `oobmngr_thread` |
 
-周期性任务入口函数模式：
+周期性任务入口函数模式（Zephyr 线程入口必须是三参数签名 `void (*)(void *, void *, void *)`，参数经 `K_THREAD_DEFINE` 的入参传入）：
 
 ```c
-void battery_thread(const uint32_t *period)
+static const uint32_t battery_period = 100; /* ms */
+
+void battery_thread(void *p1, void *p2, void *p3)
 {
+    const uint32_t *period = p1;
     while (true) {
         battery_status_check();
         battery_data_report();
         k_msleep(*period);
     }
 }
+
+K_THREAD_DEFINE(battery_tid, 2048, battery_thread,
+                (void *)&battery_period, NULL, NULL, 5, 0, 0);
 ```
 
 事件驱动任务入口函数模式：
@@ -100,33 +106,31 @@ struct task_info {
 
 事件驱动模型以"状态变化触发动作"为核心，基于 Zephyr `k_event` 原语实现模块间一对多广播。
 
-系统事件定义（`sysevent.h`）：
+系统事件定义（`sysevent.h`）——`k_event` 基于 32 位位掩码工作，事件**必须**定义为独立位，不能用顺序整数值（顺序值 1、2、3 会与 0、1、2 位重叠，导致事件误触发）：
 
 ```c
-typedef enum {
-    EC_EVENT_SYSTEM_S5_S0,
-    EC_EVENT_SYSTEM_S0_S5,
-    EC_EVENT_SYSTEM_S3_S0,
-    EC_EVENT_SYSTEM_S0_S3,
-    EC_EVENT_ENTER_OS,
-    EC_EVENT_LID_OPEN,
-    EC_EVENT_LID_CLOSE,
-    EC_EVENT_DISPLAY_OFF,
-    EC_EVENT_DISPLAY_ON,
-    EC_EVENT_ENTER_DEEP_SLEEP,
-    EC_EVENT_EXIT_DEEP_SLEEP,
-} ec_event;
+#define EC_EVENT_SYSTEM_S5_S0     BIT(0)
+#define EC_EVENT_SYSTEM_S0_S5     BIT(1)
+#define EC_EVENT_SYSTEM_S3_S0     BIT(4)
+#define EC_EVENT_SYSTEM_S0_S3     BIT(5)
+#define EC_EVENT_ENTER_OS         BIT(6)
+#define EC_EVENT_LID_OPEN         BIT(7)
+#define EC_EVENT_LID_CLOSE        BIT(8)
+#define EC_EVENT_DISPLAY_OFF      BIT(9)
+#define EC_EVENT_DISPLAY_ON       BIT(10)
+#define EC_EVENT_ENTER_DEEP_SLEEP BIT(11)
+#define EC_EVENT_EXIT_DEEP_SLEEP  BIT(12)
 ```
 
 事件广播——当系统状态变化时，`notify_subsystems()` 将事件同时发布给所有子系统：
 
 ```c
-bool notify_subsystems(ec_event event)
+bool notify_subsystems(uint32_t event_bits)
 {
-    LOG_INF("System event: %d", event);
-    k_event_post(&sEvent.event_pd, event);
-    k_event_post(&sEvent.event_power, event);
-    k_event_post(&sEvent.event_charge, event);
+    LOG_INF("System event: 0x%x", event_bits);
+    k_event_post(&sEvent.event_pd, event_bits);
+    k_event_post(&sEvent.event_power, event_bits);
+    k_event_post(&sEvent.event_charge, event_bits);
     /* ... 其他子系统 ... */
     return true;
 }
@@ -138,19 +142,16 @@ bool notify_subsystems(ec_event event)
 static void charger_sys_event(void)
 {
     uint32_t events;
-    events = k_event_wait(&sEvent.event_charge, 0xFFFF, false, K_NO_WAIT);
+    events = k_event_wait(&sEvent.event_charge, ALL_CHARGE_EVENTS, false, K_NO_WAIT);
     if (events == 0) return;
-    k_event_clear(&sEvent.event_charge, 0xFFFF);
+    k_event_clear(&sEvent.event_charge, events);
 
-    switch(events) {
-    case EC_EVENT_SYSTEM_S0_S3:
-    case EC_EVENT_SYSTEM_S0_S5:
+    /* 位掩码事件必须用按位判断，switch 无法匹配组合事件 */
+    if (events & (EC_EVENT_SYSTEM_S0_S3 | EC_EVENT_SYSTEM_S0_S5)) {
         charger_enable_lowpower();
-        break;
-    case EC_EVENT_SYSTEM_S3_S0:
-    case EC_EVENT_SYSTEM_S5_S0:
+    }
+    if (events & (EC_EVENT_SYSTEM_S3_S0 | EC_EVENT_SYSTEM_S5_S0)) {
         charger_disable_lowpower();
-        break;
     }
 }
 ```

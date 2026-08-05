@@ -26,7 +26,7 @@ LOG_MODULE_REGISTER(ec_battery, LOG_LEVEL_INF);
 # prj_release.conf
 CONFIG_LOG=y
 CONFIG_LOG_MODE_MINIMAL=y          # 最小化 LOG 开销
-CONFIG_LOG_DEFAULT_LEVEL=3         # 0=ERR, 1=WRN, 2=INF, 3=DBG
+CONFIG_LOG_DEFAULT_LEVEL=3         # 0=NONE, 1=ERR, 2=WRN, 3=INF, 4=DBG
 CONFIG_LOG_OVERRIDE_LEVEL=3        # 允许模块覆盖等级
 
 # 关闭调试日志，仅保留 ERR+WRN
@@ -79,7 +79,7 @@ uart:~$ log status
 ```kconfig
 CONFIG_LOG=y
 CONFIG_LOG_CMDS=y             # 启用 Shell 日志命令
-CONFIG_LOG_RUNTIME_FILTER=y   # 运行时过滤
+CONFIG_LOG_RUNTIME_FILTERING=y   # 运行时过滤
 ```
 
 ## 关键事件的日志规范

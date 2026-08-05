@@ -55,7 +55,7 @@ title: 测试与 CI 调试
 1. 开启覆盖率报告：
    ```bash
    west build -b native_sim -- -DCONFIG_COVERAGE=y
-   west build -t coverage_report
+   west build -t coverage
    ```
 2. 重点补充**边界条件**和**异常路径**的测试
 3. 考虑增加 Fuzz Test（用 `CONFIG_ZTEST_FUZZ=y`）
@@ -92,6 +92,6 @@ title: 测试与 CI 调试
 | 工具 | 用途 | 命令示例 |
 |------|------|----------|
 | `west build -t run` | 执行 native_sim 测试 | 自动编译并运行 |
-| `west build -t coverage_report` | 覆盖率报告 | 生成 HTML 覆盖率报告 |
-| `ztest` runner | Ztest 测试运行 | `west test` |
-| twister | Zephyr 测试框架 | `./scripts/twister -p native_sim -T tests/` |
+| `west build -t coverage` | 覆盖率报告 | 生成 HTML 覆盖率报告 |
+| `west twister` | Zephyr 测试运行 | `west twister -p native_sim -T tests/` |
+| twister | Zephyr 测试框架 | `west twister -T tests/` |

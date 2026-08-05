@@ -17,7 +17,7 @@ title: 固件升级调试
 3. 检查签名是否正确（开发阶段可用 `CONFIG_BOOT_SIGNATURE_TYPE_NONE=y`）
 4. 确认 Slot 0 的起始地址与 linker script 匹配
 5. **常见根因**：
-   - 未使用 `west sign` 或 `imagetool.py sign` 签名
+   - 未使用 `west sign` 或 `imgtool.py sign` 签名
    - Flash 分区表与 Image 大小不匹配
    - 升级 Image 的版本号低于当前版本（revert 保护机制触发）
 
@@ -74,7 +74,7 @@ title: 固件升级调试
 
 | 工具 | 用途 | 命令示例 |
 |------|------|----------|
-| `imagetool.py` | Image 签名/信息查看 | `imagetool.py sign ...` / `imagetool.py info` |
+| `imgtool.py` | Image 签名/信息查看 | `imgtool.py sign ...` / `imgtool.py info` |
 | J-Link Commander | Flash 读写 | `savebin out.bin 0x08000000 0x10000` |
 | west flash | 烧录 | `west flash --runner jlink` |
 | MCUboot Shell | Boot 状态 | `mcuboot swap_type` |

@@ -20,7 +20,7 @@ title: 运行时异常调试
    - Hard Fault → NMI → 最终触发复位
 3. 启用 Hard Fault Handler 日志输出：
    ```c
-   // 在 CONFIG_ARM_HARDFAULT_HANDLER=y 下，
+   // 在 CONFIG_FAULT_DUMP=2（详细 dump）下，
    // 利用 Fault Analyzer 打印寄存器快照
    ```
 4. **常见根因**：
@@ -54,7 +54,8 @@ title: 运行时异常调试
 3. 检查是否有高优先级 ISR 长时间占用 CPU，导致喂狗线程无法调度
 4. 临时延长看门狗超时时间定位是哪个任务导致：
    ```c
-   CONFIG_WDT_NRFX_MAX_WINDOW_MS=10000  // 调试时临时增大
+   // 在板级 DTS overlay 中增大看门狗窗口（示例：延长窗口上限），
+   // 或调整 WDT 相关 Kconfig（以目标平台实际配置项为准）
    ```
 
 ## 栈溢出

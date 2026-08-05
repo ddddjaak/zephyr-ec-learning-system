@@ -47,7 +47,7 @@ title: 架构分层模型
     </div>
   </div>
   <p className="arch-layer-desc">
-    协作式线程调度、互斥锁/信号量/消息队列/IPC、工作队列、定时器。子系统：Logging（分级日志）、Shell（UART 命令行）、PM（电源管理框架）、Storage（Flash Map / 设置存储）。<code>struct device</code> 统一驱动框架——所有驱动注册到设备树，主循环按周期遍历调度。
+    抢占式线程调度（默认，可配置协作式线程）、互斥锁/信号量/消息队列/IPC、工作队列、定时器。子系统：Logging（分级日志）、Shell（UART 命令行）、PM（电源管理框架）、Storage（Flash Map / 设置存储）。<code>struct device</code> 统一驱动框架——所有驱动注册到设备树，主循环按周期遍历调度。
   </p>
 </div>
 
@@ -136,7 +136,7 @@ app 线程 ──k_sleep()/k_sem_take()/device_ioctl(dev)──▶ Zephyr 内核
 
 Zephyr LTS 内核（fork），提供 EC 固件的运行时基础：
 
-- **内核** (`kernel/`)：协作式线程调度、互斥锁、信号量、消息队列、工作队列、定时器
+- **内核** (`kernel/`)：抢占式线程调度（默认）、互斥锁、信号量、消息队列、工作队列、定时器
 - **子系统** (`subsys/`)：Logging（分级日志）、Shell（UART 命令行）、PM（电源管理）、Storage（Flash Map / 设置存储）
 - **设备模型**：`struct device` + `DEVICE_DT_DEFINE` 统一驱动注册框架，主循环 `device_ioctl_traversal` 遍历调度
 

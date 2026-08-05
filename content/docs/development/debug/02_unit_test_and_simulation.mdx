@@ -80,7 +80,7 @@ int mock_temp_read(const struct device *dev, uint16_t *val)
 
 模拟输入事件： 测试中可注入虚拟的外部事件——键盘扫描码、GPIO 电平变化、定时器触发等。例如，测试键盘矩阵解码逻辑时，可以在测试用例中直接调用 `keyboard_scan_inject(row, col, pressed)` 来模拟按键动作，无需真实的键盘硬件。
 
-测试装置 (Fixture)： 使用 `ztest_rule_fixture` 宏可以在每个测试用例前后自动设置和清理 Mock 环境，确保测试之间互不污染：
+测试装置 (Fixture)： 使用 `ZTEST_F` 宏（fixture 测试）可以在每个测试用例前后自动设置和清理 Mock 环境，确保测试之间互不污染：
 
 ```c
 static void mock_setup(void *fixture) {

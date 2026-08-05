@@ -81,14 +81,22 @@ BQ25720 是 TI 公司的 Buck-Boost NVDC 充电控制器，通过 I2C/SMBus（�
 
 | 寄存器 | 地址 | 功能 | 典型值 |
 |--------|------|------|--------|
-| `ChargeOption0` | 0x00 | 充电选项（使能、复位、看门狗） | 0x810E |
-| `ChargeCurrent` | 0x02 | 充电电流设置（mA） | 取决于电池规格 |
-| `MaxChargeVoltage` | 0x04 | 最大充电电压（mV） | 12600（3S 电池） |
-| `ChargeOption3` | 0x30 | 输入电流限制（mA） | 取决于适配器功率 |
-| `ADCVBUS` | 0x27 | VBUS 电压读数 | 实时值 |
-| `ADCIIN` | 0x29 | 输入电流读数 | 实时值 |
-| `ADCSYSVO` | 0x2D | 系统电压读数 | 实时值 |
+| `ChargeOption0` | 0x12 | 充电选项（使能、复位、看门狗） | 0x810E |
+| `ChargeCurrent` | 0x14 | 充电电流设置（mA） | 取决于电池规格 |
+| `MaxChargeVoltage` | 0x15 | 最大充电电压（mV） | 0x3138（3S = 12600mV） |
 | `ChargerStatus` | 0x20 | 充电器状态（AC 在线、充电中、故障） | 状态位域 |
+| `ProchotStatus` | 0x21 | PROCHOT 状态 | 状态位域 |
+| `IIN_DPM` | 0x22 | 输入电流 DPM 寄存器 | 实时值 |
+| `ADCVBUS_PSYS` | 0x26 | VBUS + PSYS 电压读数 | 实时值 |
+| `ADCIIN_CMPIN` | 0x28 | 输入电流 + CMPIN 读数 | 实时值 |
+| `ADCVSYS_VBAT` | 0x29 | 系统电压 + 电池电压读数 | 实时值 |
+| `ChargeOption1` | 0x30 | 充电选项 1 | 0x3300 |
+| `ChargeOption2` | 0x31 | 充电选项 2（低功耗、终止电流等） | 0x00B7 |
+| `ChargeOption3` | 0x32 | 充电选项 3（输入限流模式等） | 0x0434 |
+| `VSYS_MIN` | 0x3E | 最小系统电压（mV） | 0x5C00（9200mV） |
+| `IIN_HOST` | 0x3F | 主机设置输入电流限制（mA） | 取决于适配器功率 |
+| `ManufacturerID` | 0xFE | 制造商 ID | 0x0040（TI） |
+| `DeviceID` | 0xFF | 器件 ID | 0x00E1 |
 
 初始化通过 `CHARGER_INIT_DATA` 表（`{register, value}` 对序列）写入，通常在电池线程启动时执行一次。
 

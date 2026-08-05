@@ -22,7 +22,7 @@ LOG_DBG("Debug value: 0x%x", val);
 ```
 CONFIG_LOG=y
 CONFIG_LOG_MODE_MINIMAL=y        # 最小日志模式（节省空间）
-CONFIG_LOG_DEFAULT_LEVEL=3       # 0=ERR, 1=WRN, 2=INF, 3=DBG
+CONFIG_LOG_DEFAULT_LEVEL=3       # 0=NONE, 1=ERR, 2=WRN, 3=INF, 4=DBG
 ```
 
 生产固件中建议使用 `CONFIG_LOG_MODE_MINIMAL=y` 并降低默认级别。

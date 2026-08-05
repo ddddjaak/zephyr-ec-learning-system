@@ -81,10 +81,10 @@ title: GPIO / Pinmux 调试
 
 **Triage Checklist**：
 
-1. **定位** — 确认中断触发模式：
-   ```dts
-   interrupts = <GPIO_INT_LEVEL_LOW>;   // 电平触发（需手动清除）
-   interrupts = <GPIO_INT_EDGE_FALLING>; // 下降沿触发
+1. **定位** — 确认中断触发模式（运行时 API，注意 `GPIO_INT_*` 标志是 C API 参数，不写入 DTS）：
+   ```c
+   gpio_pin_interrupt_configure_dt(&btn, GPIO_INT_LEVEL_LOW);   // 电平触发（需手动清除）
+   gpio_pin_interrupt_configure_dt(&btn, GPIO_INT_EDGE_FALLING); // 下降沿触发
    ```
 2. **根因** — 常见原因：
    - 使用 Level-triggered 但 ISR 中未清除中断源 → 反复触发
