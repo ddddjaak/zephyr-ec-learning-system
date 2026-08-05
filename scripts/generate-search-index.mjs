@@ -24,7 +24,16 @@ function findMdxFiles(dir, base = '') {
   return files;
 }
 
-function extractFrontmatterField(content, field) {
+/**
+ * Normalize CRLF → LF so frontmatter regexes work identically on Windows
+ * (core.autocrlf=true converts checked-out files to CRLF).
+ */
+function normalizeLineEndings(content) {
+  return content.replace(/\r\n/g, '\n');
+}
+
+function extractFrontmatterField(raw, field) {
+  const content = normalizeLineEndings(raw);
   const fm = content.match(/^---\n([\s\S]*?)\n---/);
   if (!fm) return null;
   const re = new RegExp(`^${field}:\\s*(.+)$`, 'm');
@@ -32,31 +41,45 @@ function extractFrontmatterField(content, field) {
   return m ? m[1].trim().replace(/^['"]|['"]$/g, '') : null;
 }
 
-function extractHeadings(content) {
+function extractHeadings(raw) {
   // Strip frontmatter first
+  const content = normalizeLineEndings(raw);
   const body = content.replace(/^---\n[\s\S]*?\n---\n?/, '');
   const headings = [];
-  const re = /^#{2,4}\s+(.+)$/gm;
-  let match;
-  while ((match = re.exec(body)) !== null) {
-    headings.push({
-      level: match[0].match(/^#+/)[0].length,
-      content: match[1].trim(),
-      id: match[1].trim().toLowerCase().replace(/\s+/g, '-').replace(/[^\w一-鿿-]/g, ''),
-    });
+  const lines = body.split('\n');
+  let inFence = false;
+
+  for (const line of lines) {
+    // Skip lines inside fenced code blocks (e.g. "# dts/bindings/..." in examples)
+    if (/^```/.test(line.trim())) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+
+    const m = line.match(/^(#{2,4})\s+(.+)$/);
+    if (m) {
+      headings.push({
+        level: m[1].length,
+        content: m[2].trim(),
+        id: m[2].trim().toLowerCase().replace(/\s+/g, '-').replace(/[^\w一-鿿-]/g, ''),
+      });
+    }
   }
   return headings;
 }
 
-function extractBodyText(content) {
-  return content
+function extractBodyText(raw) {
+  return normalizeLineEndings(raw)
     .replace(/^---\n[\s\S]*?\n---/, '')
     .replace(/```[\s\S]*?```/g, '')
     .replace(/<[^>]+>/g, '')
     .replace(/[#*`~>|\[\]()!\-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
-    .substring(0, 5000);
+    // 800 chars is enough for full-text search; larger bodies blow up the
+    // flexsearch "full" tokenizer index (O(N²) CJK substrings) to >6MB.
+    .substring(0, 800);
 }
 
 function buildUrl(relPath) {
@@ -98,8 +121,10 @@ async function main() {
   const FlexSearch = (_Search && _Search.Document ? _Search : (_Search.default || _Search)).Document;
 
   // IMPORTANT: Must match fumadocs-core's createDocument() exactly
+  // tokenize: 'forward' keeps the CJK index small — 'full' generates O(N²)
+  // substring tokens for Chinese text and blows search.json up to multi-MB.
   const index = new FlexSearch({
-    tokenize: 'full',
+    tokenize: 'forward',
     document: {
       id: 'id',
       index: ['content'],
@@ -112,7 +137,7 @@ async function main() {
   let count = 0;
 
   for (const { full, rel } of mdxFiles) {
-    const raw = readFileSync(full, 'utf-8');
+    const raw = normalizeLineEndings(readFileSync(full, 'utf-8'));
     const title = extractFrontmatterField(raw, 'title');
     if (!title) continue;
 
@@ -173,6 +198,16 @@ async function main() {
 
   console.log(`Indexed ${count} entries from ${mdxFiles.length} pages`);
 
+  // Sanity check: every page must produce at least 1 entry (the page record).
+  // A silent near-empty index (e.g. CRLF frontmatter mismatch) must fail the build.
+  if (count < mdxFiles.length) {
+    console.error(
+      `Sanity check FAILED: expected at least ${mdxFiles.length} entries, got ${count}. ` +
+        'Aborting to avoid shipping a broken search index.',
+    );
+    process.exit(1);
+  }
+
   // Export — collect all chunks from callback
   const raw = {};
   await new Promise((resolve) => {
@@ -180,7 +215,9 @@ async function main() {
     index.export((key, data) => {
       raw[key] = data;
       clearTimeout(pending);
-      pending = setTimeout(resolve, 50);
+      // flexsearch yields chunks across macrotasks; wait for an idle window
+      // before resolving so large indexes are not truncated.
+      pending = setTimeout(resolve, 250);
     });
   });
 
@@ -189,8 +226,19 @@ async function main() {
   const outDir = join(__dirname, '..', 'public', 'api');
   mkdirSync(outDir, { recursive: true });
   const outFile = join(outDir, 'search.json');
-  writeFileSync(outFile, JSON.stringify(exported));
-  console.log(`Search index: ${outFile} (${JSON.stringify(exported).length} bytes)`);
+  const json = JSON.stringify(exported);
+  writeFileSync(outFile, json);
+  console.log(`Search index: ${outFile} (${json.length} bytes)`);
+
+  // Guard against future index-size regressions (CJK full-tokenizer blowups).
+  const MAX_INDEX_BYTES = 3 * 1024 * 1024;
+  if (json.length > MAX_INDEX_BYTES) {
+    console.error(
+      `Sanity check FAILED: search index is ${json.length} bytes (> ${MAX_INDEX_BYTES}). ` +
+        'Trim body text length or switch tokenization strategy.',
+    );
+    process.exit(1);
+  }
 }
 
 main().catch((err) => {

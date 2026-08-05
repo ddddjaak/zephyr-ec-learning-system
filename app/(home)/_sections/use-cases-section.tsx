@@ -5,7 +5,7 @@ import { useScrollReveal } from '@/hooks/use-scroll-reveal';
 const useCases = [
   { title: '笔记本 EC', desc: 'Intel/AMD 平台嵌入式控制器，管理键盘、电池、温度、风扇及系统状态，支持现代待机 S0ix。', chips: 'CSCE250X · CSCE2520' },
   { title: 'Chromebook EC', desc: 'Google Chrome OS 兼容 EC 方案，通过严格 CTS 认证，支持深度休眠与即时唤醒。', chips: 'CSCE250X' },
-  { title: '平板 / 二合一', desc: '低功耗 EC 固件，管理 Type-C 充电、传感器 Hub 及可拆卸键盘，深度休眠功耗 &lt; 50μA。', chips: 'CSCE2010 · CSCE250X' },
+  { title: '平板 / 二合一', desc: '低功耗 EC 固件，管理 Type-C 充电、传感器 Hub 及可拆卸键盘，深度休眠功耗 < 50μA。', chips: 'CSCE2010 · CSCE250X' },
   { title: '工业嵌入式控制器', desc: '宽温域 (-40~85°C)、长寿命支持，适用于工业平板、POS 机、医疗终端等严苛环境。', chips: 'CSCE2010' },
 ];
 

@@ -29,10 +29,6 @@ export const staticSlugs: string[][] = [
     "07_logging_and_diagnostics"
   ],
   [
-    "best-practices",
-    "index"
-  ],
-  [
     "best-practices"
   ],
   [
@@ -131,10 +127,6 @@ export const staticSlugs: string[][] = [
     "06_test_framework"
   ],
   [
-    "development",
-    "index"
-  ],
-  [
     "development"
   ],
   [
@@ -200,15 +192,9 @@ export const staticSlugs: string[][] = [
     "03_flash_and_verify"
   ],
   [
-    "getting-started",
-    "index"
-  ],
-  [
     "getting-started"
   ],
-  [
-    "index"
-  ],
+  [],
   [
     "porting",
     "01_porting_guide"
@@ -241,20 +227,11 @@ export const staticSlugs: string[][] = [
   ],
   [
     "porting",
-    "06_migration_from_legacy_ec",
-    "index"
-  ],
-  [
-    "porting",
     "06_migration_from_legacy_ec"
   ],
   [
     "porting",
     "07_bringup_checklist"
-  ],
-  [
-    "porting",
-    "index"
   ],
   [
     "porting"
@@ -308,10 +285,6 @@ export const staticSlugs: string[][] = [
     "12_gpio_and_pinmux"
   ],
   [
-    "qa",
-    "index"
-  ],
-  [
     "qa"
   ],
   [
@@ -331,11 +304,6 @@ export const staticSlugs: string[][] = [
     "04_open_source_resources"
   ],
   [
-    "reference",
-    "index"
-  ],
-  [
     "reference"
-  ],
-  []
+  ]
 ];

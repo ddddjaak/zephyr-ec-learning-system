@@ -64,7 +64,20 @@ export function useScrollReveal(
         visibility: initialVisibility === 'hidden' ? 'hidden' : 'visible',
       });
 
-      // 创建 stagger 入场动画
+      // prefers-reduced-motion: 直接跳到最终态，跳过动画
+      // （简单一次性检查即可，useGSAP 内使用 gsap.matchMedia() 需额外管理
+      //   revert 清理，文档站场景无需响应运行时偏好切换）
+      const prefersReduced =
+        typeof window !== 'undefined' &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+      if (prefersReduced) {
+        gsap.set(children, { opacity: 1, y: 0, x: 0, visibility: 'visible' });
+        return;
+      }
+
+      // 创建 stagger 入场动画（to 状态必须恢复 visibility，否则
+      // initialVisibility:'hidden' 的元素动画结束后永远不可见）
       gsap.fromTo(
         children,
         { opacity: 0, y: fromY, x: fromX },
@@ -72,6 +85,7 @@ export function useScrollReveal(
           opacity: 1,
           y: 0,
           x: 0,
+          visibility: 'visible',
           duration,
           ease,
           stagger,

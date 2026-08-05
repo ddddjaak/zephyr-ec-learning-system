@@ -2,6 +2,7 @@
 
 import Link from 'next/link';
 import { ChevronRight } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { useScrollReveal } from '@/hooks/use-scroll-reveal';
 
 const highlights = [
@@ -15,6 +16,13 @@ const highlights = [
 
 export function DeliverySection() {
   const { scopeRef } = useScrollReveal({ stagger: 0.08, fromY: 24 });
+
+  // 静态导出时以构建年份渲染；跨年后若直接渲染 new Date() 会导致
+  // hydration mismatch，因此初始用占位年份，mount 后再更新。
+  const [year, setYear] = useState(2026);
+  useEffect(() => {
+    setYear(new Date().getFullYear());
+  }, []);
 
   return (
     <div className="w-full bg-[#f5f5f7] dark:bg-[#0d0d0f]">
@@ -49,7 +57,7 @@ export function DeliverySection() {
       </div>
 
       <footer className="w-full border-t border-neutral-200 bg-[#f5f5f7] py-8 text-center text-xs text-neutral-400 dark:border-neutral-800 dark:bg-[#0d0d0f] dark:text-neutral-600">
-        版权所有 &copy; {new Date().getFullYear()} Chipsea. &nbsp;|&nbsp; Powered by Zephyr RTOS &amp; Fumadocs
+        版权所有 &copy; {year} Chipsea. &nbsp;|&nbsp; Powered by Zephyr RTOS &amp; Fumadocs
       </footer>
     </div>
   );

@@ -1,12 +1,13 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useTheme } from 'next-themes';
 
 export function MermaidInner({ chart, chartDark }: { chart: string; chartDark?: string }) {
   const { resolvedTheme } = useTheme();
   const [svg, setSvg] = useState('');
   const [failed, setFailed] = useState(false);
+  const graphId = useId().replace(/[^a-zA-Z0-9_-]/g, '');
 
   const source = resolvedTheme === 'dark' && chartDark ? chartDark : chart;
 
@@ -17,16 +18,19 @@ export function MermaidInner({ chart, chartDark }: { chart: string; chartDark?: 
       mod.default.initialize({
         startOnLoad: false,
         theme: resolvedTheme === 'dark' ? 'dark' : 'base',
-        securityLevel: 'loose',
+        // 'strict' sanitizes output (DOMPurify) — 'loose' would allow raw HTML
+        // inside diagram sources, which combined with dangerouslySetInnerHTML
+        // is a stored-XSS vector.
+        securityLevel: 'strict',
         fontFamily: 'inherit',
       });
       mod.default
-        .render('mermaid-graph', source)
+        .render(graphId, source)
         .then((r) => { if (!cancelled) setSvg(r.svg); })
         .catch(() => { if (!cancelled) setFailed(true); });
     });
     return () => { cancelled = true; };
-  }, [source, resolvedTheme]);
+  }, [source, resolvedTheme, graphId]);
 
   if (failed) {
     return (

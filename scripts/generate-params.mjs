@@ -1,7 +1,10 @@
 /**
- * Pre-build: generates static slugs for static export + Orama search index.
+ * Pre-build: generates static slugs for static export.
+ * Note: only slugs WITHOUT the trailing "index" segment are emitted —
+ * Fumadocs maps index.mdx to its parent path, so ["section","index"]
+ * would resolve to a notFound() error page in static export.
  */
-import { writeFileSync, readdirSync } from 'fs';
+import { writeFileSync, readdirSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 
@@ -18,19 +21,24 @@ function walkDir(dir, parentSlugs = []) {
       walkDir(fullPath, [...parentSlugs, entry.name]);
     } else if (entry.name.endsWith('.mdx')) {
       const name = entry.name.replace(/\.mdx$/, '');
-      const slug = [...parentSlugs, name];
-      slugs.push(slug);
-      if (name === 'index' && parentSlugs.length > 0) {
-        if (!slugs.some(s => s.length === parentSlugs.length && s.every((v, i) => v === parentSlugs[i]))) {
-          slugs.push([...parentSlugs]);
-        }
+      if (name === 'index') {
+        // index.mdx maps to its parent path only — never emit "index" itself
+        slugs.push([...parentSlugs]);
+      } else {
+        slugs.push([...parentSlugs, name]);
       }
     }
   }
 }
 
 walkDir(contentDir);
-slugs.push([]);
+
+// Root page: content/docs/index.mdx maps to [] (already pushed by walkDir).
+// Only keep a fallback when the root index.mdx exists to avoid a 404 page
+// sneaking into the export for a non-existent document.
+if (!existsSync(join(contentDir, 'index.mdx')) && !slugs.some((s) => s.length === 0)) {
+  console.warn('Warning: content/docs/index.mdx is missing — /docs root will not be generated');
+}
 
 // Deduplicate
 const seen = new Set();

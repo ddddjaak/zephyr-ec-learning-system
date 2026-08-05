@@ -29,28 +29,37 @@ function getSearchDoc(api: string): Promise<any> {
 
   _apiUrl = api;
   _docPromise = (async () => {
-    const m = await import('flexsearch');
-    const FlexSearch = m && (m as any).Document ? m : ((m as any).default || m);
+    try {
+      const m = await import('flexsearch');
+      const FlexSearch = m && (m as any).Document ? m : ((m as any).default || m);
 
-    const res = await fetch(api);
-    if (!res.ok) throw new Error(`Failed to fetch search index: ${res.status}`);
-    const data = await res.json();
+      const res = await fetch(api);
+      if (!res.ok) throw new Error(`Failed to fetch search index: ${res.status}`);
+      const data = await res.json();
 
-    const doc = new FlexSearch.Document({
-      tokenize: 'full',
-      document: {
-        id: 'id',
-        index: ['content'],
-        tag: ['tags'],
-        store: true,
-      },
-    });
+      const doc = new FlexSearch.Document({
+        // MUST match the tokenizer used by scripts/generate-search-index.mjs
+        tokenize: 'forward',
+        document: {
+          id: 'id',
+          index: ['content'],
+          tag: ['tags'],
+          store: true,
+        },
+      });
 
-    for (const [k, v] of Object.entries(data.raw)) {
-      doc.import(k, v);
+      for (const [k, v] of Object.entries(data.raw)) {
+        doc.import(k, v);
+      }
+
+      return doc;
+    } catch (e) {
+      // Reset the cache so a transient failure (offline, 500, bad index)
+      // doesn't permanently break search for the rest of the session.
+      _docPromise = null;
+      _apiUrl = null;
+      throw e;
     }
-
-    return doc;
   })();
 
   return _docPromise;
