@@ -22,6 +22,9 @@ out/
 # Generated search index
 public/api/
 
+# External reference sources (mkdocs originals, not part of this site)
+refs/
+
 # Fumadocs generated source
 .source/
 
