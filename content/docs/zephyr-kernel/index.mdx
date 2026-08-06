@@ -1,0 +1,70 @@
+---
+title: Zephyr 内核
+---
+
+Zephyr RTOS 系统学习资料：从内核机制、配置系统、驱动模型到子系统与架构设计，覆盖 Zephyr 开发全链路。
+
+<div className="hub-grid my-6">
+
+<a className="hub-card" href="/zephyr-ec-learning-system/docs/zephyr-kernel/08_introduction">
+  <div className="hub-card-icon">📚</div>
+  <strong>基础入门</strong>
+  <p>Zephyr RTOS 基础认知、工程结构与构建流程、West 工具深入用法、基础编程示例。</p>
+  <div className="hub-card-sub">
+    <span style={{"background":"rgba(59,130,246,0.1)","color":"#3b82f6"}}>RTOS 概念</span>
+    <span style={{"background":"rgba(59,130,246,0.1)","color":"#3b82f6"}}>工程结构</span>
+    <span style={{"background":"rgba(59,130,246,0.1)","color":"#3b82f6"}}>West 工具</span>
+    <span style={{"background":"rgba(59,130,246,0.1)","color":"#3b82f6"}}>示例代码</span>
+  </div>
+  <span className="hub-card-arrow">→</span>
+</a>
+
+<a className="hub-card" href="/zephyr-ec-learning-system/docs/zephyr-kernel/01_kernel_mechanisms">
+  <div className="hub-card-icon">⚙️</div>
+  <strong>内核机制</strong>
+  <p>线程管理与调度、同步原语、中断处理、内核通信——Zephyr 内核的核心机制详解。</p>
+  <div className="hub-card-sub">
+    <span style={{"background":"rgba(139,92,246,0.1)","color":"#8b5cf6"}}>线程</span>
+    <span style={{"background":"rgba(139,92,246,0.1)","color":"#8b5cf6"}}>同步</span>
+    <span style={{"background":"rgba(139,92,246,0.1)","color":"#8b5cf6"}}>中断</span>
+    <span style={{"background":"rgba(139,92,246,0.1)","color":"#8b5cf6"}}>IPC</span>
+  </div>
+  <span className="hub-card-arrow">→</span>
+</a>
+
+<a className="hub-card" href="/zephyr-ec-learning-system/docs/zephyr-kernel/02_config_system">
+  <div className="hub-card-icon">🧩</div>
+  <strong>配置与驱动</strong>
+  <p>Kconfig 与设备树深入、Zephyr 驱动开发模型与设备驱动 API。</p>
+  <div className="hub-card-sub">
+    <span style={{"background":"rgba(236,72,153,0.1)","color":"#ec4899"}}>Kconfig</span>
+    <span style={{"background":"rgba(236,72,153,0.1)","color":"#ec4899"}}>设备树</span>
+    <span style={{"background":"rgba(236,72,153,0.1)","color":"#ec4899"}}>驱动模型</span>
+  </div>
+  <span className="hub-card-arrow">→</span>
+</a>
+
+<a className="hub-card" href="/zephyr-ec-learning-system/docs/zephyr-kernel/12_architecture_design">
+  <div className="hub-card-icon">🏗️</div>
+  <strong>架构与进阶</strong>
+  <p>子系统全景、系统架构设计、性能优化、安全与合规、内核源码分析、社区贡献指南。</p>
+  <div className="hub-card-sub">
+    <span style={{"background":"rgba(245,158,11,0.1)","color":"#f59e0b"}}>子系统</span>
+    <span style={{"background":"rgba(245,158,11,0.1)","color":"#f59e0b"}}>架构设计</span>
+    <span style={{"background":"rgba(245,158,11,0.1)","color":"#f59e0b"}}>优化</span>
+    <span style={{"background":"rgba(245,158,11,0.1)","color":"#f59e0b"}}>安全</span>
+  </div>
+  <span className="hub-card-arrow">→</span>
+</a>
+
+</div>
+
+## 如何使用
+
+| 你的角色 | 推荐路径 |
+|----------|----------|
+| 初次接触 Zephyr | 从 [基础认知](/docs/zephyr-kernel/08_introduction) 开始，按顺序阅读 [工程结构](/docs/zephyr-kernel/09_project_structure) → [West 工具](/docs/zephyr-kernel/10_west_tool) → [基础示例](/docs/zephyr-kernel/11_basic_examples) |
+| 深入学习内核 | [内核核心机制](/docs/zephyr-kernel/01_kernel_mechanisms) → [Kconfig 与设备树](/docs/zephyr-kernel/02_config_system) → [驱动开发](/docs/zephyr-kernel/03_driver_model) |
+| 系统设计决策 | [子系统](/docs/zephyr-kernel/04_subsystems) + [系统架构设计](/docs/zephyr-kernel/12_architecture_design) |
+| 性能与安全 | [系统优化](/docs/zephyr-kernel/05_optimization) + [安全与合规](/docs/zephyr-kernel/06_security) |
+| 源码级研究 | [内核源码分析](/docs/zephyr-kernel/07_kernel_source)，想参与贡献看 [社区贡献指南](/docs/zephyr-kernel/13_community_contribution) |

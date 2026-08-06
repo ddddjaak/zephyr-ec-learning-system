@@ -16,6 +16,9 @@ export function getMDXComponents(components?: MDXComponents): MDXComponents {
     Files,
     Folder,
     MermaidChart,
+    // remarkMdxMermaid emits <Mermaid chart="..." /> from ```mermaid blocks;
+    // route it to the project's themed, sanitized client component.
+    Mermaid: MermaidChart,
     ...components,
   };
 }

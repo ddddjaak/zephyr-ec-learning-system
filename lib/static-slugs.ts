@@ -305,5 +305,60 @@ export const staticSlugs: string[][] = [
   ],
   [
     "reference"
+  ],
+  [
+    "zephyr-kernel",
+    "01_kernel_mechanisms"
+  ],
+  [
+    "zephyr-kernel",
+    "02_config_system"
+  ],
+  [
+    "zephyr-kernel",
+    "03_driver_model"
+  ],
+  [
+    "zephyr-kernel",
+    "04_subsystems"
+  ],
+  [
+    "zephyr-kernel",
+    "05_optimization"
+  ],
+  [
+    "zephyr-kernel",
+    "06_security"
+  ],
+  [
+    "zephyr-kernel",
+    "07_kernel_source"
+  ],
+  [
+    "zephyr-kernel",
+    "08_introduction"
+  ],
+  [
+    "zephyr-kernel",
+    "09_project_structure"
+  ],
+  [
+    "zephyr-kernel",
+    "10_west_tool"
+  ],
+  [
+    "zephyr-kernel",
+    "11_basic_examples"
+  ],
+  [
+    "zephyr-kernel",
+    "12_architecture_design"
+  ],
+  [
+    "zephyr-kernel",
+    "13_community_contribution"
+  ],
+  [
+    "zephyr-kernel"
   ]
 ];
