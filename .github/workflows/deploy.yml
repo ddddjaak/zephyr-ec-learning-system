@@ -34,16 +34,6 @@ jobs:
         env:
           NEXT_STATIC_EXPORT: 1
 
-      # Re-running a failed job re-uploads the artifact without cleaning the
-      # previous one, leaving two "github-pages" artifacts in the same run,
-      # which makes deploy-pages fail ("Multiple artifacts named github-pages").
-      # Delete any stale one first so reruns stay single-artifact.
-      - name: Delete stale github-pages artifact
-        uses: actions/delete-artifact@v4
-        with:
-          name: github-pages
-          failOnError: false
-
       - uses: actions/upload-pages-artifact@v3
         with:
           path: out
