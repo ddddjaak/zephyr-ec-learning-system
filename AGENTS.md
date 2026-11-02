@@ -11,9 +11,11 @@ Fumadocs (Next.js 16) 构建的 EC 固件开发手册。源文件：85 `.mdx` �
 ```bash
 npm install          # 首次（postinstall 自动运行 fumadocs-mdx）
 npm run dev          # 开发 → localhost:3000/zephyr-ec-learning-system/
-npm run build        # 完整构建（先运行 prebuild），非静态导出
+npm run build        # 完整构建（先运行 prebuild），走 --webpack 通道
 npm run build:static # 静态导出（NEXT_STATIC_EXPORT=1）→ out/，部署用这个
 ```
+
+**构建通道说明（2026-11-03）**：`next build` 默认的 Turbopack 在本机存在确定性失败——PostCSS/Tailwind worker 进程超时（`Failed to write app endpoint /_not-found/page`，`deadline has elapsed`），`npm run build` 与 `npm run build:static` 两种模式均会命中。两条构建通道已固定加 `--webpack`（各约 9~10 分钟，产物一致；webpack 全量构建已验证通过）。若后续 Next.js/Turbopack 升级修复了该 worker 超时问题，可移除两处 `--webpack`。注意：不要混跑两种 bundler 后不清 `.next`——切换通道前先 `rm -rf .next`。
 
 **Prebuild（构建前自动运行）**:
 - `scripts/generate-params.mjs` — 递归遍历 `content/docs/`，将静态 slug 写入 `lib/static-slugs.ts`（供 `generateStaticParams` 使用）

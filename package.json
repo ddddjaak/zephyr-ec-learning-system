@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "next dev",
     "prebuild": "node scripts/generate-params.mjs && node scripts/generate-search-index.mjs",
-    "build": "next build",
-    "build:static": "npm run prebuild && cross-env NEXT_STATIC_EXPORT=1 next build",
+    "build": "next build --webpack",
+    "build:static": "npm run prebuild && cross-env NEXT_STATIC_EXPORT=1 next build --webpack",
     "start": "next start",
     "postinstall": "fumadocs-mdx"
   },
