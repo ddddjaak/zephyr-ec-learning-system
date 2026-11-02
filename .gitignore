@@ -33,3 +33,6 @@ next-env.d.ts
 
 # Claude Code
 .claude/
+
+# ZCode
+.zcode/

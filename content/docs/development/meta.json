@@ -1,1 +1,10 @@
-{"title":"开发指南","pages":["architecture","modules","appdev","debug"]}
+{
+  "title": "开发指南",
+  "pages": [
+    "index",
+    "architecture",
+    "modules",
+    "appdev",
+    "debug"
+  ]
+}
