@@ -65,7 +65,7 @@ west build -b csce250x_evb app --build-dir build/ec_fw -- -DEXTRA_CONF_FILE=rele
 west build -t menuconfig
 west build -t guiconfig     # GUI 版
 
-# 把手工调好的配置固化回 prj.conf（只输出与默认值不同的项）
+# 把手工调好的配置导出为精简 defconfig（build/zephyr/defconfig，需手动择要拷回 prj.conf）
 west build -t savedefconfig
 
 # 查 RAM / Flash 占用报告

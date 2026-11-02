@@ -10,7 +10,7 @@ EC 是"电池产品的耗电守门人"：整机待机功耗的很大一部分取
 没有数据的功耗优化是猜测。先建立三个基线：
 
 1. **电流基线**：精密电流表/功率分析仪串联供电回路，记录 S0 / S3 / S5 各状态的电流；
-2. **唤醒基线**：`CONFIG_PM_STATS=y` + 调高日志级别，观察单位时间唤醒次数与驻留比例；
+2. **唤醒基线**：`CONFIG_STATS=y` + `CONFIG_PM_STATS=y`（注意 PM_STATS 依赖 STATS，只开后者会被静默丢弃）+ 调高日志级别，观察单位时间唤醒次数与驻留比例；
 3. **线程基线**：`kernel threads` / `kernel stacks`（需 `CONFIG_THREAD_MONITOR` 等）找出高负载线程。
 
 :::warning
@@ -61,7 +61,7 @@ pm_device_action_run(dev, PM_DEVICE_ACTION_SUSPEND);
 
 | 指标 | 工具 | 目标 |
 |------|------|------|
-| S3 驻留占比 | `CONFIG_PM_STATS` + 日志 | > 90%（无业务时） |
+| S3 驻留占比 | `CONFIG_STATS` + `CONFIG_PM_STATS` + 日志 | > 90%（无业务时） |
 | 唤醒次数/分钟 | PM 日志时间戳 | 与设计唤醒源数量一致 |
 | 各状态电流 | 功率分析仪 | 接近数据手册标称值（差值 < 10%） |
 | 线程 CPU 占用 | `kernel threads` | idle 线程占比 > 95% |

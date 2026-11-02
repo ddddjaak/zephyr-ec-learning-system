@@ -41,9 +41,6 @@ Zephyr 里每个功能模块是**独立线程**，由调度器按优先级抢占
 
 ```c
 /* Zephyr 风格：模块各自成线程，K_FOREVER 挂起等待统一启动 */
-K_THREAD_DEFINE(battery_tid, 2048, battery_thread,
-                NULL, NULL, NULL, 5, 0, K_FOREVER);
-
 void battery_thread(void *p1, void *p2, void *p3)
 {
     while (true) {
@@ -51,6 +48,10 @@ void battery_thread(void *p1, void *p2, void *p3)
         k_msleep(100);            /* 调度器在这 100ms 里运行其他线程 */
     }
 }
+
+/* 入口函数在前，宏在编译期创建线程对象 */
+K_THREAD_DEFINE(battery_tid, 2048, battery_thread,
+                NULL, NULL, NULL, 5, 0, K_FOREVER);
 ```
 
 对应的经验映射：
@@ -61,7 +62,7 @@ void battery_thread(void *p1, void *p2, void *p3)
 | 主循环节拍（10ms 轮询） | 独立线程 + `k_msleep()` 周期 |
 | 软件定时器数组 | `k_timer` + work，或 `k_work_schedule()` 延迟工作 |
 | 全局变量 + 关中断保护 | `k_mutex` / `k_sem` / 消息队列（尽量少关中断） |
-| 事件标志字 | `k_event`（Zephyr 3.5+） |
+| 事件标志字 | `k_event`（Zephyr 3.4+） |
 | 模块间直接调函数 | 消息队列 / 事件解耦（参考[任务与事件模型](/docs/development/appdev/04_task_and_event_model)） |
 
 :::note
