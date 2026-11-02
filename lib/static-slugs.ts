@@ -73,6 +73,11 @@ export const staticSlugs: string[][] = [
   ],
   [
     "development",
+    "appdev",
+    "09_shell_command_dev"
+  ],
+  [
+    "development",
     "architecture",
     "01_layered_architecture"
   ],

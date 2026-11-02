@@ -1,0 +1,135 @@
+---
+title: 自定义 Shell 命令开发
+description: 为功能模块注册 Shell 调试命令——基础命令、带参数命令、子命令树与动态补全
+---
+
+EC 固件的每个功能模块几乎都值得暴露几条 Shell 命令：查看状态、手动触发动作、注入测试数据。Zephyr Shell 的注册是纯编译期宏，零运行时开销（不开启 `CONFIG_SHELL` 时完全不进固件）。命令运行时行为与内置命令一致，速查见[命令速查表](/docs/reference/01_command_reference)。
+
+## 基础配置
+
+```ini
+CONFIG_SHELL=y                    # Shell 框架
+CONFIG_SHELL_BACKEND_SERIAL=y     # 串口后端（或 RTT）
+CONFIG_SHELL_LOG_BACKEND=y        # 日志输出到 Shell 控制台
+```
+
+## 注册一条最简单的命令
+
+处理函数签名固定为 `int (*)(const struct shell *sh, size_t argc, char **argv)`：
+
+```c
+#include <zephyr/shell/shell.h>
+
+static int cmd_battery_status(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+
+    shell_print(sh, "Battery: %d%%, %d mV, %s",
+                get_battery_level(), get_bat_voltage(),
+                is_charging() ? "charging" : "discharging");
+    return 0;
+}
+
+SHELL_CMD_REGISTER(battery, NULL, "Battery status", cmd_battery_status);
+```
+
+运行效果：
+
+```
+uart:~$ battery
+Battery: 89%, 11400 mV, discharging
+```
+
+要点：
+
+- 返回 `0` 表示成功；返回负值（如 `-EINVAL`）时 Shell 显示用法提示并标红。
+- 输出一律用 `shell_print()` / `shell_error()` / `shell_warn()`（自动带模块前缀与配色），不要用 `printk`——它绕过 Shell 通道。
+- `SHELL_CMD_REGISTER` 注册的是**根命令**，同名的只允许一个，建议以模块名命名（`battery`、`charger`、`thermal`）。
+
+## 带参数的命令
+
+`SHELL_CMD_ARG_REGISTER` 的最后两个参数分别是必选参数个数和可选参数个数：
+
+```c
+static int cmd_charger_set(const struct shell *sh, size_t argc, char **argv)
+{
+    long ma = strtol(argv[1], NULL, 0);
+
+    if (ma < 0 || ma > 5000) {
+        shell_error(sh, "Invalid current: %s (0-5000 mA)", argv[1]);
+        return -EINVAL;
+    }
+    charger_set_current((uint32_t)ma);
+    shell_print(sh, "Charge current set to %ld mA", ma);
+    return 0;
+}
+
+SHELL_CMD_ARG_REGISTER(chgset, NULL, "Set charge current [mA]",
+                       cmd_charger_set, 1, 0);
+```
+
+```
+uart:~$ chgset 2000
+Charge current set to 2000 mA
+uart:~$ chgset
+chgset: command requires 1 parameter   ← 自动补全的用法提示来自 help 字符串
+```
+
+## 子命令树
+
+模块命令多时组织成两级结构——父命令作为"分组入口"（handler 传 `NULL`），子命令用静态集合定义：
+
+```c
+static int cmd_thermal_get(const struct shell *sh, size_t argc, char **argv);
+static int cmd_thermal_fan(const struct shell *sh, size_t argc, char **argv);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(sub_thermal,
+    SHELL_CMD(get, NULL, "Show all temperature readings", cmd_thermal_get),
+    SHELL_CMD(fan, NULL, "Show/set fan duty [0-100]", cmd_thermal_fan),
+    SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(thermal, &sub_thermal, "Thermal commands", NULL);
+```
+
+```
+uart:~$ thermal get
+CPU: 52C, PCH: 47C, SKIN: 41C
+uart:~$ thermal fan 60
+Fan duty -> 60%
+```
+
+输入 `thermal` 后按 Tab 可以补全子命令列表——这是 Shell 自动提供的，不需要额外代码。
+
+## 动态补全（可选）
+
+参数希望从运行时数据补全（如设备名、通道号）时，用动态子命令：
+
+```c
+static const char *channel_name_get(size_t idx, struct shell_static_entry *entry)
+{
+    if (idx >= adc_channel_count()) {
+        return NULL;   /* 返回 NULL 结束补全列表 */
+    }
+    entry->syntax = adc_channel_name(idx);
+    entry->handler = NULL;
+    return entry->syntax;
+}
+SHELL_DYNAMIC_CMD_CREATE(dsub_channel, channel_name_get);
+```
+
+然后把 `&dsub_channel` 作为命令的 `subcmd` 参数传入即可。
+
+## EC 模块的团队约定
+
+- **每个模块至少一条 `status` 子命令**：FAE 现场排错时按 `模块名 status` 就能拿到关键状态，不用翻日志。
+- 命令只读优先：查询类命令不加确认；**动作类命令（写 Flash、复位、强制关机）必须加参数确认**（如要求显式输入 `confirm`），参考 `kernel reboot` 的二次确认模式。
+- 命令名用模块名做根（`battery`、`pd`、`port80`），不要发明缩写——Shell 有 Tab 补全，长名字没有成本。
+- 量产固件如需保留 Shell 但裁剪命令面，用 `CONFIG_SHELL_CMDS_SELECT` 只编译白名单命令。
+
+## 相关页面
+
+- [日志与调试](/docs/development/debug/01_logging_and_debug) — Shell 与日志框架的完整配置
+- [命令速查表](/docs/reference/01_command_reference) — 内置命令全集（已对照 v3.7.0 源码核实）
+- [调试与 GPIO 模块](/docs/development/modules/10_debug_and_gpio) — `app/debug/` 里的调试设施

@@ -58,9 +58,14 @@ export function HeroSection() {
 
         <h1
           ref={headingRef}
-          className="text-balance font-sans text-5xl font-extrabold leading-[1.06] tracking-[-0.04em] text-neutral-900 dark:text-white sm:text-6xl md:text-7xl lg:text-[5rem]"
+          className="text-balance font-sans text-5xl font-extrabold leading-[1.06] tracking-[-0.04em] text-neutral-900 dark:text-white sm:text-6xl md:text-7xl"
         >
-          安全 · 高效 · 自主可控
+          {/* inline-block 保证断行只发生在词组边界，不会把「高效」拆开 */}
+          <span className="inline-block">安全</span>
+          <span className="mx-1 sm:mx-2">·</span>
+          <span className="inline-block">高效</span>
+          <span className="mx-1 sm:mx-2">·</span>
+          <span className="inline-block">自主可控</span>
         </h1>
 
         <p

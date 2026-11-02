@@ -50,7 +50,6 @@ title: EC 术语与缩写速查
 | **GYRO** | Gyroscope | 陀螺仪——角动量测量 |
 | **MAG** | Magnetometer | 磁力计——数字罗盘 |
 | **BAR** | Barometer | 气压计 |
-| **DPTF** | Dynamic Platform and Thermal Framework | Intel 动态平台与热框架 |
 
 ## 系统功能
 
@@ -72,3 +71,35 @@ title: EC 术语与缩写速查
 | **CCD** | Case Closed Debugging | 封闭式调试——无需拆机即可调试 |
 | **ectool** | — | AP 端命令行工具，向 EC 发送命令 |
 | **Retimer** | — | 信号重定时器——恢复和重传高速信号 |
+
+## ACPI 与电源状态（Windows/x86 平台）
+
+| 缩写 | 全称 | 说明 |
+|------|------|------|
+| **ACPI** | Advanced Configuration and Power Interface | 高级配置与电源接口——OS 与固件间的电源管理规范 |
+| **SCI** | System Control Interrupt | 系统控制中断——EC 通知 OS 处理 ACPI 事件（状态寄存器 bit5，掩码 0x20） |
+| **SMI** | System Management Interrupt | 系统管理中断——SMM 模式的高优先级中断 |
+| **EC Query (_Qxx)** | — | EC 事件查询：SCI 触发后 OS 发送 0x84 Query，EC 返回事件号，OS 执行对应 `_Qxx` 方法 |
+| **GPE** | General Purpose Event | ACPI 通用事件——`_Lxx`/`_Exx` 方法对应 GPE 触发（与 EC Query 是两条链路） |
+| **AML** | ACPI Machine Language | ACPI 字节码——DSDT/SSDT 里 OS 解释执行的方法体 |
+| **S0ix** | — | Modern Standby 待机态——屏幕关闭但系统保持低延迟可唤醒 |
+| **S3 / S4 / S5** | — | 睡眠（内存保电）/ 休眠（内存写入盘）/ 关机 |
+| **PROCHOT** | — | 处理器热保护信号——EC 拉低触发 CPU 降频，防过热 |
+| **DPTF** | Dynamic Platform and Thermal Framework | Intel 动态平台与热框架（OS 侧温控策略） |
+
+## EC 硬件术语
+
+| 缩写 | 全称 | 说明 |
+|------|------|------|
+| **Port 80 / POST Code** | Power-On Self-Test Code | 启动诊断码——BIOS 各阶段写到 Port 80h，EC 捕获用于定位启动卡死 |
+| **KBC / 8042** | Keyboard Controller | 传统键盘控制器接口——eSPI 外设通道模拟 8042，承载 PS/2 键盘 |
+| **SMBus** | System Management Bus | 系统管理总线——I2C 的子集，2.2k~10k 上拉、有 PEC/CRC 校验，电池/充电器走这条 |
+| **PECI** | Platform Environment Control Interface | Intel 处理器温度/遥测接口——EC 读 CPU DTS 温度的通道 |
+| **VW** | Virtual Wire | eSPI 虚拟线——用 in-band 消息替代 SIDEBAND 信号（SCI、SMI、RCIN 等） |
+| **OOB** | Out-of-Band | eSPI 带外通道——EC 经 SMBus 包格式访问 PCH 内部寄存器 |
+| **MAFS / SAFS** | Master/Slave-Attached Flash Sharing | eSPI Flash 共享模式——Flash 挂主控侧（EC 经主控访问）或挂 EC 侧（主控经 EC 访问） |
+| **Fuel Gauge** | — | 电量计——库仑计数 + 电压建模计算 RSOC |
+| **RSOC** | Relative State of Charge | 相对荷电状态——电池百分比电量 |
+| **NVDC** | Non-Voltage Drop Charger | 降压-升压型充电架构——系统电压独立于电池电压，亏电也能开机 |
+| **Power Sequence** | — | 上电时序——各路电源轨按先后顺序使能，EC 负责监控与控制 |
+| **RCIN** | Reset Input | 重置输入信号——EC 触发的系统复位路径 |

@@ -76,10 +76,7 @@ function extractBodyText(raw) {
     .replace(/<[^>]+>/g, '')
     .replace(/[#*`~>|\[\]()!\-]/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    // 800 chars is enough for full-text search; larger bodies blow up the
-    // flexsearch "full" tokenizer index (O(N²) CJK substrings) to >6MB.
-    .substring(0, 800);
+    .trim();
 }
 
 function buildUrl(relPath) {
@@ -142,7 +139,6 @@ async function main() {
     if (!title) continue;
 
     const url = buildUrl(rel);
-    const bodyText = extractBodyText(raw);
     const headings = extractHeadings(raw);
     const breadcrumbs = buildBreadcrumbs(rel);
     const tags = rel.includes('/') ? [rel.split('/')[0]] : [];
@@ -183,13 +179,19 @@ async function main() {
       });
     }
 
-    // Add body text content as a text entry for full-text search
-    if (bodyText.length > 0) {
+    // Add body text as chunked text entries for full-text search.
+    // Chunks keep each flexsearch document at a moderate token count
+    // (tokenizer is 'forward' — CJK substring chains are what blow up size,
+    // so bodies are capped: first 3200 chars per page, 800 per chunk).
+    const BODY_CHUNK = 800;
+    const BODY_MAX = 3200;
+    const bodyText = extractBodyText(raw).substring(0, BODY_MAX);
+    for (let i = 0; i * BODY_CHUNK < bodyText.length; i++) {
       index.add(count++, {
-        id: `${url}-body`,
+        id: i === 0 ? `${url}-body` : `${url}-body${i}`,
         page_id: url,
         type: 'text',
-        content: bodyText,
+        content: bodyText.slice(i * BODY_CHUNK, (i + 1) * BODY_CHUNK),
         tags,
         url,
       });
@@ -230,8 +232,9 @@ async function main() {
   writeFileSync(outFile, json);
   console.log(`Search index: ${outFile} (${json.length} bytes)`);
 
-  // Guard against future index-size regressions (CJK full-tokenizer blowups).
-  const MAX_INDEX_BYTES = 3 * 1024 * 1024;
+  // Guard against future index-size regressions (CJK forward-tokenizer growth
+  // is linear in body chars; 6MB ≈ 91 pages × 3200-char bodies + headings).
+  const MAX_INDEX_BYTES = 6 * 1024 * 1024;
   if (json.length > MAX_INDEX_BYTES) {
     console.error(
       `Sanity check FAILED: search index is ${json.length} bytes (> ${MAX_INDEX_BYTES}). ` +

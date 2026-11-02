@@ -11,7 +11,7 @@ West 是 Zephyr 项目的元工具，用于管理多仓库工程、构建、烧�
 
 | 命令 | 说明 | 示例 |
 |------|------|------|
-| `west init` | 初始化 Zephyr 工作空间 | `west init -m https://github.com/zephyrproject-rtos/zephyr --mr v3.6.0 zephyrproject` |
+| `west init` | 初始化 Zephyr 工作空间 | `west init -m https://github.com/zephyrproject-rtos/zephyr --mr v3.7.0 zephyrproject` |
 | `west update` | 同步所有模块子仓库 | `west update` |
 | `west build` | 编译 Zephyr 应用 | `west build -b csce250x_evb app/ec-firmware` |
 | `west flash` | 烧录固件到目标板 | `west flash --runner jlink` |
@@ -43,7 +43,7 @@ West 是 Zephyr 项目的元工具，用于管理多仓库工程、构建、烧�
 | `west build -t guiconfig` | 图形化 Kconfig 配置 (GUI) | `west build -b csce250x_evb -t guiconfig` |
 | `west build -t hardenconfig` | 生成最小化 .config (去除无效选项) | `west build -b csce250x_evb -t hardenconfig` |
 | `west build -p` | 纯净构建 (先清理再编译) | `west build -b csce250x_evb -p always` |
-| `west build -- -DOVERLAY_CONFIG=...` | 叠加额外 Kconfig 片段 | `west build -b csce250x_evb -- -DOVERLAY_CONFIG=debug.conf` |
+| `west build -- -DOVERLAY_CONFIG=...` | 叠加额外 Kconfig 片段（兼容别名，新代码推荐 `EXTRA_CONF_FILE`） | `west build -b csce250x_evb -- -DEXTRA_CONF_FILE=debug.conf` |
 | `west build -- -DDTC_OVERLAY_FILE=...` | 叠加 Devicetree 覆盖文件 | `west build -b csce250x_evb -- -DDTC_OVERLAY_FILE=ec.overlay` |
 | `west build -- -DCMAKE_BUILD_TYPE=...` | 指定编译类型 | `west build -b csce250x_evb -- -DCMAKE_BUILD_TYPE=Debug` |
 
@@ -69,6 +69,51 @@ West 是 Zephyr 项目的元工具，用于管理多仓库工程、构建、烧�
 
 > **提示**：命令中的 `-device CSCE250X` 需替换为实际芯片型号（如 CSCE2010、CSCE2520 等）。
 
+## Shell 内置命令速查
+
+以下均为 Zephyr 3.7 Shell（`CONFIG_SHELL=y`）内置命令，已对照 v3.7.0 源码核实；括号内为生效所需 Kconfig。自定义命令的开发见[自定义 Shell 命令开发](/docs/development/appdev/09_shell_command_dev)。
+
+### kernel — 内核诊断
+
+| 命令 | 作用 | 生效条件 |
+|------|------|----------|
+| `kernel threads` | 列出所有线程及状态 | `CONFIG_INIT_STACKS` + `CONFIG_THREAD_STACK_INFO` + `CONFIG_THREAD_MONITOR` |
+| `kernel stacks` | 各线程栈使用统计 | 同上 |
+| `kernel cycles` | CPU 周期统计 | — |
+| `kernel heap` | 系统堆使用统计 | `CONFIG_SYS_HEAP_RUNTIME_STATS` 且堆大小 > 0 |
+| `kernel uptime` | 系统运行时长 | — |
+| `kernel version` | 内核版本号 | — |
+| `kernel sleep <ms>` | 让当前 Shell 线程休眠 | — |
+| `kernel reboot cold` / `warm` | 重启 | `CONFIG_REBOOT` |
+| `kernel log-level <module> <0-4>` | 设置模块日志级别 | `CONFIG_LOG_RUNTIME_FILTERING` |
+
+### device / log — 设备与日志
+
+| 命令 | 作用 | 生效条件 |
+|------|------|----------|
+| `device list` | 列出已注册设备及状态 | — |
+| `device pm toggle <device>` | 手动挂起/恢复设备 | `CONFIG_PM_DEVICE` |
+| `log status` | 查看各模块日志级别 | — |
+| `log enable <level> <module>` | 打开模块日志（级别 err/wrn/inf/dbg） | — |
+| `log disable <module>` | 关闭模块日志 | — |
+
+### 总线与存储
+
+| 命令 | 作用 | 生效条件 |
+|------|------|----------|
+| `i2c scan <device>` | 扫描总线设备地址 | `CONFIG_I2C`（shell 随驱动启用） |
+| `i2c read <dev> <addr> <reg> [n]` | 读寄存器 | 同上 |
+| `i2c write <dev> <addr> <reg> <byte...>` | 写寄存器 | 同上 |
+| `i2c speed <dev> <speed>` | 设置总线速率 | 同上 |
+| `i2c recover <dev>` | 总线卡死恢复（9 个时钟脉冲） | 同上 |
+| `flash write/read/erase ...` | Flash 读写擦 | `CONFIG_FLASH_SHELL` |
+| `flash page_info <page>` | 查询 Flash 页布局 | `CONFIG_FLASH_SHELL` |
+| `gpio conf/get/set <dev> <pin> ...` | GPIO 配置与读写 | `CONFIG_GPIO`（shell 随驱动启用） |
+
+:::tip
+`flash write/read` 直接操作真实硬件，量产固件建议不开 `CONFIG_FLASH_SHELL`；调试期使用时注意与 `storage_partition` 划清界限，避免误擦参数区。
+:::
+
 ## 版本控制与工程管理
 
 日常开发中使用的 Git 命令速查。
@@ -85,7 +130,7 @@ West 是 Zephyr 项目的元工具，用于管理多仓库工程、构建、烧�
 | `git stash` | 暂存当前工作区改动 | `git stash push -m "WIP: espi driver"` |
 | `git stash pop` | 恢复暂存的改动 | `git stash pop` |
 | `git cherry-pick` | 摘取特定提交到当前分支 | `git cherry-pick abc1234` |
-| `git bisect` | 二分法定位引入问题的提交 | `git bisect start; git bisect bad; git bisect good v3.5.0` |
+| `git bisect` | 二分法定位引入问题的提交 | `git bisect start; git bisect bad; git bisect good v3.7.0` |
 | `west manifest --freeze` | 导出当前所有仓库的精确版本 | `west manifest --freeze > manifest-frozen.yml` |
 
 ---
