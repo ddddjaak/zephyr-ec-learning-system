@@ -1,13 +1,134 @@
 ---
 title: 与传统 EC 固件的差异
+description: 从裸机超级循环到 Zephyr 线程模型——开发范式、硬件抽象、配置与调试的系统性对比
 ---
 
+从传统 EC 固件（裸机超级循环或轻量 RTOS + 自研驱动）迁移到 Zephyr，改变的不只是内核，而是整个开发范式。本页逐维度对比两套体系，帮助你把已有的经验映射到新框架上。逐芯片平台的迁移操作见[迁移概览](/docs/porting/06_migration_from_legacy_ec)。
+
+## 总体对照
 
 | 维度 | 传统 EC 固件 | Chipsea Zephyr 开发包 |
 |------|-------------|----------------------|
 | 系统基础 | 裸机或轻量 RTOS + 自研驱动 | Zephyr RTOS 3.7.0 LTS |
+| 任务模型 | 超级循环 + 中断标志位 | 抢占式线程 + 工作队列 + 事件 |
+| 硬件抽象 | 寄存器直操 / 私有 HAL | 设备树 + 统一设备模型 API |
 | 可移植性 | 与硬件强耦合，迁移成本高 | DTS 解耦硬件，一套代码适配多平台 |
 | 配置方式 | 宏定义 / 硬编码 | DTS + Kconfig 统一配置 |
+| 驱动复用 | 每个芯片重写一份 | 上游驱动 + 板级 overlay |
 | 可维护性 | 私有代码，团队交接成本高 | 对齐 Zephyr 社区标准，易于升级 |
+| 调试手段 | printf / 在线仿真 | 分级日志 + Shell + GDB + Twister 测试 |
 | 上手难度 | 需深入理解芯片与私有框架 | 开箱即用，专注业务逻辑 |
 
+## 任务模型：超级循环 → 线程与事件
+
+传统 EC 的典型主循环是"轮询所有模块 + 处理中断标志位"：
+
+```c
+/* 传统裸机风格：所有逻辑挤在一个 while(1) 里，时序靠人为约定 */
+void main(void)
+{
+    system_init();
+    while (1) {
+        if (flag_keyscan)  { flag_keyscan = 0;  keyscan_task(); }
+        if (flag_battery)  { flag_battery = 0;  battery_task(); }
+        if (flag_thermal)  { flag_thermal = 0;  thermal_task(); }
+        if (flag_host)     { flag_host = 0;     host_task();    }
+    }
+}
+```
+
+Zephyr 里每个功能模块是**独立线程**，由调度器按优先级抢占执行，不需要手工轮询标志位：
+
+```c
+/* Zephyr 风格：模块各自成线程，K_FOREVER 挂起等待统一启动 */
+K_THREAD_DEFINE(battery_tid, 2048, battery_thread,
+                NULL, NULL, NULL, 5, 0, K_FOREVER);
+
+void battery_thread(void *p1, void *p2, void *p3)
+{
+    while (true) {
+        battery_status_check();
+        k_msleep(100);            /* 调度器在这 100ms 里运行其他线程 */
+    }
+}
+```
+
+对应的经验映射：
+
+| 裸机里的做法 | Zephyr 里的对应物 |
+|--------------|-------------------|
+| 中断里置标志位，主循环处理 | 中断里 `k_work_submit()`，workqueue 里处理（下半部） |
+| 主循环节拍（10ms 轮询） | 独立线程 + `k_msleep()` 周期 |
+| 软件定时器数组 | `k_timer` + work，或 `k_work_schedule()` 延迟工作 |
+| 全局变量 + 关中断保护 | `k_mutex` / `k_sem` / 消息队列（尽量少关中断） |
+| 事件标志字 | `k_event`（Zephyr 3.5+） |
+| 模块间直接调函数 | 消息队列 / 事件解耦（参考[任务与事件模型](/docs/development/appdev/04_task_and_event_model)） |
+
+:::note
+中断上半部的纪律不变：ISR 里仍然只能做"取数据、置状态、唤醒下半部"。区别在于 Zephyr 给了现成的下半部机制（workqueue），不再需要自制标志位轮询。
+:::
+
+## 硬件抽象：寄存器直操 → 设备树与设备模型
+
+裸机代码里硬件信息以宏和寄存器地址形式散落在代码中；Zephyr 把它集中到**设备树**，代码只面向设备 API：
+
+```c
+/* 传统：寄存器地址硬编码，换芯片 = 重写 */
+#define I2C_SCL_REG  0x40002000
+#define I2C_SDA_REG  0x40002004
+/* ... 手工操作寄存器实现 I2C 时序 ... */
+```
+
+```c
+/* Zephyr：硬件来自 DTS，API 跨芯片一致 */
+#include <zephyr/drivers/i2c.h>
+
+static const struct device *bus = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+
+int read_temp(uint8_t addr, uint8_t *val)
+{
+    return i2c_reg_read_byte(bus, addr, TEMP_REG, val);
+}
+```
+
+换芯片平台时：应用层代码不动，改动集中在**板级 DTS + 少量驱动**。这就是"一套代码适配多平台"的实现方式。设备树写法速查见[设备树速查](/docs/reference/06_devicetree_cheatsheet)。
+
+## 配置：条件编译 → Kconfig
+
+| 传统做法 | Zephyr 做法 |
+|----------|-------------|
+| `#ifdef ENABLE_LOG` 手工开关 | `CONFIG_LOG=y`（build/zephyr/.config 可查最终值） |
+| 编译选项写在 Makefile 深处 | `prj.conf` 集中管理，menuconfig 可视化 |
+| 不同客户项目 fork 整个代码库 | 每项目一个 conf 片段 + overlay，主干共享 |
+
+细节见[Kconfig 配置系统](/docs/development/appdev/02_kconfig_system)与[配置体系](/docs/development/architecture/05_configuration)。
+
+## 调试与测试
+
+裸机时代的调试手段在 Zephyr 里都有对应升级：
+
+| 传统 | Zephyr |
+|------|--------|
+| 到处插 printf，发布前手工删 | 分级日志（`LOG_*`），发布用 Kconfig 一键降级 |
+| 无命令行，改状态要重烧固件 | Shell 命令行，运行时查状态/改日志级别（见[自定义 Shell 命令开发](/docs/development/appdev/09_shell_command_dev)） |
+| 无单元测试 | ztest + Twister，可在 native_sim 上跑（见[单元测试与仿真](/docs/development/debug/02_unit_test_and_simulation)） |
+| HardFault 靠猜 | 寄存器现场 + 堆栈回溯 + coredump（见[异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis)） |
+
+## 升级与生态
+
+- **版本管理**：传统项目把内核源码拷进仓库后从此失联；Zephyr 通过 west manifest 锁定版本，既能锁定 LTS 基线，也能跟进上游修复。
+- **驱动生态**：常见外设（传感器、eSPI 控制器等）上游已有驱动，移植 = 写一个 overlay，而不是从零写驱动。
+- **人员流动**：新工程师按[Zephyr 内核章节](/docs/zephyr-kernel/01_introduction)即可建立标准知识体系，不必啃私有框架。
+
+## 迁移成本的真实分布
+
+| 工作 | 相对成本 | 说明 |
+|------|----------|------|
+| 应用层业务逻辑 | 低 | 裸机 C 代码基本可直接搬进线程 |
+| 板级 DTS / pinctrl | 中 | 把引脚表翻译成 overlay，一次性工作 |
+| 平台专属驱动（PD、风扇等） | 高 | 依赖芯片 IP 差异，对照[迁移指南](/docs/porting/06_migration_from_legacy_ec)逐模块处理 |
+| 团队习惯切换 | 中 | 线程化思维 + Kconfig/DTS 工具链，按[30-60-90 计划](/docs/getting-started/00_learning_paths)过渡 |
+
+:::tip
+不要试图"把裸机代码包一层线程外壳"——正确姿势是业务逻辑保留、骨架重写。先用[Bringup 清单](/docs/porting/07_bringup_checklist)把板子跑起来，再逐模块迁移，每迁一个模块就能删掉一段超级循环。
+:::

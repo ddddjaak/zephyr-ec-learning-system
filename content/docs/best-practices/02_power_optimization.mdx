@@ -1,50 +1,69 @@
 ---
 title: 功耗优化策略（System / Peripheral / Application）
+description: 系统级、外设级、应用级三层功耗优化清单——PM 配置、runtime suspend、事件驱动与测量方法
 ---
 
+EC 是"电池产品的耗电守门人"：整机待机功耗的很大一部分取决于 EC 的唤醒频率与外设管理。本页按系统 / 外设 / 应用三层给出优化清单，所有符号均已对照 Zephyr 3.7 核实，功耗类 Q&A 见[电池与电源调试](/docs/qa/01_battery_and_power)。
+
+## 先测量，再优化
+
+没有数据的功耗优化是猜测。先建立三个基线：
+
+1. **电流基线**：精密电流表/功率分析仪串联供电回路，记录 S0 / S3 / S5 各状态的电流；
+2. **唤醒基线**：`CONFIG_PM_STATS=y` + 调高日志级别，观察单位时间唤醒次数与驻留比例；
+3. **线程基线**：`kernel threads` / `kernel stacks`（需 `CONFIG_THREAD_MONITOR` 等）找出高负载线程。
+
+:::warning
+常见反模式：一上来就调参数。先确认"系统在 S3 下醒着的时间占比"，再定位是谁在唤醒它——90% 的功耗问题来自意外唤醒源与未挂起的外设。
+:::
 
 ## 系统级优化（System Level）
 
-- 启用 Zephyr PM 模块：
+- 启用 PM 框架三件套：
 
-```
-CONFIG_PM=y
-
-CONFIG_PM_DEVICE=y
-
-CONFIG_PM_DEVICE_RUNTIME=y
+```ini
+CONFIG_PM=y                    # idle 线程进入低功耗
+CONFIG_PM_DEVICE=y             # 设备 suspend/resume 回调
+CONFIG_PM_DEVICE_RUNTIME=y     # 空闲设备自动挂起
 ```
 
-- 利用 idle 线程 自动进入低功耗模式（例如 SLEEP、DEEP SLEEP）。
+- 开启 **tickless 内核**，空闲时不打周期中断：
 
-- 在电源状态切换（S0 → S3 → S5）时，动态关闭不必要的外设时钟（通过
-  clock_control_off()）。
+```ini
+CONFIG_TICKLESS_KERNEL=y
+```
 
-- 避免频繁中断唤醒系统，可通过 中断聚合（Interrupt Coalescing）
-  降低唤醒频率。
+- 电源状态切换（S0 → S3 → S5）时，通过 clock_control 子系统动态关闭不必要的外设时钟（`CONFIG_CLOCK_CONTROL=y`）。
+- 降低唤醒频率：合并中断（如键盘矩阵扫描用 8ms 周期而非逐键中断）、让传感器用更低采样率进入待机。
+- 自定义电源策略：`CONFIG_PM_POLICY_CUSTOM=y` 并覆盖 `pm_policy_next_state()`，按业务定义"何时允许深睡"（写法见[功耗优化案例](/docs/zephyr-kernel/10_optimization)）。
 
 ## 外设级优化（Peripheral Level）
 
-- 对 I²C/SPI/UART 等外设，启用 runtime suspend/resume：
+- **runtime suspend**：驱动实现 `PM_DEVICE` 回调后，引用计数归零即自动挂起；手动控制用：
 
+```c
+pm_device_action_run(dev, PM_DEVICE_ACTION_SUSPEND);
 ```
-  pm_device_action_run(dev, PM_DEVICE_ACTION_SUSPEND);
 
-```
-
-- 关闭未使用 GPIO 的上拉电阻与驱动输出。
-
-- 使用 PWM 占空比调制 替代持续供电，如风扇或背光控制。
-
-- 对 ADC、传感器采样，使用 k_work_delayable 周期调度，避免 busy-loop。
+- 关闭未使用 GPIO：配置为模拟输入或禁用上下拉，浮空引脚的漏电流在深度睡眠下不可忽略。
+- 风扇/背光用 PWM 占空比调制，而不是线性调压持续供电。
+- ADC / 传感器采样用 `k_work_delayable` 周期调度，禁止 busy-loop 等待转换完成。
+- I2C 器件配置进入器件级低功耗模式（如传感器 standby 寄存器），而不是只挂起总线。
 
 ## 应用级优化（Application Level）
 
-- 通过事件驱动机制（如 k_event）替代轮询任务。
+- **事件驱动替代轮询**：用 `k_event` / 消息队列让线程睡到有事件再醒（见[任务与事件模型](/docs/development/appdev/04_task_and_event_model)）。
+- 合并周期任务：多个 100ms 级任务合并到一个调度线程，减少唤醒次数。
+- 低功耗策略表：按 S0/S3/S5 定义各外设使能矩阵，电源序列切换时统一应用（见[电源管理模块](/docs/development/modules/03_power_management)）。
+- 日志降噪：高频 `LOG_DBG` 本身就是唤醒源，发布固件默认级别降到 WRN。
 
-- 合并多个周期性任务为一个统一调度线程。
+## 验证闭环
 
-- 使用低功耗策略表（Power Policy Table）定义各场景的外设使能状态。
+| 指标 | 工具 | 目标 |
+|------|------|------|
+| S3 驻留占比 | `CONFIG_PM_STATS` + 日志 | > 90%（无业务时） |
+| 唤醒次数/分钟 | PM 日志时间戳 | 与设计唤醒源数量一致 |
+| 各状态电流 | 功率分析仪 | 接近数据手册标称值（差值 < 10%） |
+| 线程 CPU 占用 | `kernel threads` | idle 线程占比 > 95% |
 
-- 定期分析 PM_STATS 和 thread analyzer，识别高负载线程。
-
+优化前后各测一轮并记录到项目文档——不可复现的"省电"不算数。

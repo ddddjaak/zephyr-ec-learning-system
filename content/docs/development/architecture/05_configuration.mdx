@@ -1,11 +1,81 @@
 ---
-title: 配置体系简介
+title: 配置体系
+description: Kconfig 与设备树双轨配置——分工边界、文件优先级、常用命令与常见误区
 ---
 
+开发包使用 Zephyr 标准的 **Kconfig + 设备树（DTS）双轨配置**：
 
-开发包使用 Zephyr 标准的 Kconfig + 设备树 双轨配置：
+- **Kconfig**：控制功能开关（软件层面）——决定哪些模块参与编译、日志级别、栈大小等；
+- **设备树（DTS）**：描述硬件连接（硬件层面）——决定外设的地址、引脚、速率等参数。
 
-- Kconfig：控制功能开关（软件层面）—— 决定哪些模块参与编译；
-- 设备树（DTS）：描述硬件连接（硬件层面）—— 决定外设的地址、引脚、速率等参数。
+一句话分工：**"要不要这个功能"找 Kconfig，"这个功能接在哪个引脚/地址"找 DTS**。
 
-日常开发主要通过 `prj.conf` 启用/关闭功能模块，通过板级 `.dts` 文件调整硬件参数。Kconfig 配置语法、优先级机制与自定义方法详见第5章 [应用开发指南 → Kconfig 配置系统](/docs/development/appdev/02_kconfig_system)。
+## 分工边界
+
+| 问题 | 去哪配置 | 示例 |
+|------|----------|------|
+| 要不要编译日志系统 | Kconfig | `CONFIG_LOG=y` |
+| 日志输出到哪个串口 | DTS（chosen 节点） | `zephyr,console = &uart0;` |
+| I2C 总线要不要启用 | Kconfig | `CONFIG_I2C=y` |
+| I2C 挂了哪个器件、地址多少 | DTS | `reg = <0x49>;` |
+| 线程栈多大 | Kconfig | `CONFIG_MAIN_STACK_SIZE=2048` |
+| LED 接在哪个 GPIO | DTS | `gpios = <&gpioa 5 0>;` |
+
+边界记忆法：把同一块板子的 DTS 原样交给别人、只给你 conf，你编译出的固件功能开关一样但引脚不对——说明改错了轨。符号不生效的排查见 [Kconfig 速查](/docs/reference/05_kconfig_cheatsheet)。
+
+## 配置文件的分层与优先级
+
+最终配置是多层合并的结果，**后加载者覆盖先加载者**：
+
+```
+芯片默认（Kconfig.default）＜ SoC/板级 defconfig ＜ 应用 prj.conf ＜ EXTRA_CONF_FILE 片段 ＜ west build 命令行 -DCONFIG_XXX
+```
+
+| 文件 | 位置 | 用途 |
+|------|------|------|
+| `<board>_defconfig` | `boards/<vendor>/<board>/` | 板级基线：该板必选的配置 |
+| `prj.conf` | 应用目录 | 项目主配置（日常改动的地方） |
+| `<用途>.conf` 片段 | 应用目录 | 按场景叠加（如 `release.conf`、`debug.conf`） |
+| 命令行 `-DCONFIG_XXX=...` | 构建命令 | 临时覆盖，不落盘 |
+
+叠加片段用 `EXTRA_CONF_FILE`：
+
+```bash
+west build -b csce250x_evb app --build-dir build/ec_fw -- -DEXTRA_CONF_FILE=release.conf
+```
+
+:::note
+合并结果永远以构建产物 `build/zephyr/.config` 为准——排查"配置为什么不生效"，第一件事就是在里面搜符号名，而不是猜优先级。
+:::
+
+## 设备树一侧的对应分层
+
+| 文件 | 用途 |
+|------|------|
+| `<board>.dts` | 板级基线：节点、引脚、外设连接 |
+| `<board>-pinctrl.dtsi` | 引脚复用定义 |
+| `app.overlay` / `*.overlay` | 应用层增补与修改（只写要改的节点） |
+
+叠加顺序同样是"板级在前、应用在后"，最终合并结果看 `build/zephyr/zephyr.dts`。写法速查见[设备树速查](/docs/reference/06_devicetree_cheatsheet)。
+
+## 常用配置命令
+
+```bash
+# 交互式查看/修改最终配置（依赖链一目了然）
+west build -t menuconfig
+west build -t guiconfig     # GUI 版
+
+# 把手工调好的配置固化回 prj.conf（只输出与默认值不同的项）
+west build -t savedefconfig
+
+# 查 RAM / Flash 占用报告
+west build -t ram_report
+west build -t rom_report
+```
+
+## 常见误区
+
+1. **在 DTS 里开功能**：`status = "okay"` 只让节点存在，对应的 Kconfig 子系统（如 `CONFIG_I2C`）不开，驱动照样不编译——两轨都要检查。
+2. **改了 prj.conf 不重新构建**：conf 只在构建时合并，跑旧的 `build/` 目录里的命令不会生效。
+3. **在 prj.conf 里写板级配置**：能用 overlay 解决的硬件差异不要塞进应用 conf，否则换板就失效。
+4. **迷信命令行覆盖**：`-DCONFIG_XXX` 优先级最高但不留痕，团队协作时配置应落在 conf 文件里走代码评审。
