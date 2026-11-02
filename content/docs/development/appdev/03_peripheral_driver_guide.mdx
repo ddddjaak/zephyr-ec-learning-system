@@ -7,19 +7,28 @@ title: 外设驱动使用指南
 
 ## GPIO
 
-设备树定义（在板级 `.dts` 或 overlay 中）：
+设备树定义（在板级 `.dts` 或 overlay 中）——LED 类节点需放在 `compatible = "gpio-leds"` 的父节点下才会绑定标准 binding：
 
-```
-led0: led_0 {
-    gpios = <&gpioa 5 GPIO_ACTIVE_HIGH>;
-    label = "LED0";
+```devicetree
+/ {
+    leds {
+        compatible = "gpio-leds";
+
+        led0: led_0 {
+            gpios = <&gpioa 5 GPIO_ACTIVE_HIGH>;
+            label = "LED0";
+        };
+    };
 };
 ```
 
 驱动使用：
 
 ```c
-const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_NODELABEL(led0), gpios);
+#include <zephyr/drivers/gpio.h>
+
+static const struct gpio_dt_spec led =
+    GPIO_DT_SPEC_GET(DT_NODELABEL(led0), gpios);
 
 void main(void)
 {
@@ -34,6 +43,8 @@ void main(void)
 中断回调配置——EC 中最常用的外设事件响应模式：
 
 ```c
+#include <zephyr/drivers/gpio.h>
+
 static void button_pressed(const struct device *dev,
                            struct gpio_callback *cb,
                            uint32_t pins)
@@ -41,12 +52,19 @@ static void button_pressed(const struct device *dev,
     printk("Button pressed!\n");
 }
 
-GPIO_DT_DEFINE(button, gpios);
+/* 按键节点（board DTS 中定义）*/
+static const struct gpio_dt_spec button =
+    GPIO_DT_SPEC_GET(DT_NODELABEL(button), gpios);
+
+static struct gpio_callback button_cb_data;
 
 void init_button(void)
 {
     gpio_pin_configure_dt(&button, GPIO_INPUT);
     gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_TO_ACTIVE);
+
+    /* 先初始化回调对象并挂接处理函数，再注册到设备 */
+    gpio_init_callback(&button_cb_data, button_pressed, BIT(button.pin));
     gpio_add_callback(button.port, &button_cb_data);
 }
 ```

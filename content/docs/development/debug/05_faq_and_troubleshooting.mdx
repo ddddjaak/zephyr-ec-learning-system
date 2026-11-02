@@ -47,7 +47,7 @@ title: 常见问题排查 (FAQ)
 
 诊断方法：
 - 检查 DTS 中对应节点的 `status = "okay"` 是否设置（区分大小写），`disabled` 或 `reserved` 会导致驱动不加载。
-- 使用 `west build -t devicetree` 导出最终合并后的设备树头文件，确认节点存在且属性值正确。
+- 查看最终合并后的设备树 `build/zephyr/zephyr.dts`，确认节点存在且属性值正确（该文件是所有 dts/overlay 叠加后的最终结果）。
 - 检查驱动的 compatible string 是否与 Zephyr binding 文件中定义的 `compatible` 一致（binding 文件路径：`dts/bindings/[vendor]/[device].yaml`）。
 
 解决方案：
@@ -57,9 +57,9 @@ title: 常见问题排查 (FAQ)
 - 对于 I2C/SPI 子节点，确认 `reg` 属性地址正确且在父总线的地址范围内。
 
 验证步骤：
-- `west build -t devicetree` 后检查 `build/zephyr/include/generated/devicetree_generated.h`，搜索设备节点的宏定义确认存在。
+- 重新构建后检查 `build/zephyr/zephyr.dts` 与 `build/zephyr/include/generated/devicetree_generated.h`，搜索设备节点的宏定义确认存在。
 - 启动后在 Shell 中执行 `device list` 查看已注册设备列表，确认目标设备出现在输出中。
-- 在应用代码中调用 `device_get_binding("DEVICE_NAME")` 检查返回值，非 NULL 即绑定成功。
+- 在应用代码中用 `DEVICE_DT_GET(DT_NODELABEL(xxx))` 获取设备句柄并调用 `device_is_ready()` 检查，返回 true 即绑定成功。
 
 ## 驱动与外设初始化问题
 
@@ -67,12 +67,12 @@ title: 常见问题排查 (FAQ)
 
 诊断方法：
 - 在 Shell 中执行 `device list` 查看所有设备状态，确认目标设备的初始化状态（READY/FAILED/OFF）。
-- 在应用代码中检查 `device_get_binding("DEVICE_NAME")` 的返回值：返回 NULL 表示设备未找到；返回非 NULL 但后续调用 `device_is_ready()` 返回 false 表示初始化失败。
-- 检查设备初始化日志：启用 `CONFIG_DEVICE_LOG_LEVEL=4`，查看 `LOG_ERR` 输出中的初始化失败原因（如时钟未开、电源域未供电、引脚冲突）。
+- 在应用代码中检查 `DEVICE_DT_GET(DT_NODELABEL(xxx))` + `device_is_ready()`：`device_is_ready()` 返回 false 表示设备未找到或初始化失败。
+- 检查设备初始化日志：将日志默认级别调到调试（`CONFIG_LOG_DEFAULT_LEVEL=4`），或单独调高对应驱动模块的 `CONFIG_<驱动>_LOG_LEVEL`，查看 `LOG_ERR` 输出中的初始化失败原因（如时钟未开、电源域未供电、引脚冲突）。
 
 解决方案：
 - 电源/时钟问题：检查 DTS 中设备是否配置了 `clocks` / `power-domain` 属性，确认对应时钟控制器驱动已启用。
-- Pinmux 问题：检查 DTS 中 `pinctrl-0` 属性是否正确配置，使用 `west build -t pinctrl` 检查引脚分配，确保无冲突。
+- Pinmux 问题：检查 DTS 中 `pinctrl-0` 属性是否正确配置——查看 `build/zephyr/zephyr.dts` 中的 pinctrl 定义与板级 `pinctrl.dtsi`，确保无冲突。
 - I2C/SPI 设备：检查总线驱动是否已初始化成功（`device list` 中先确认 I2C/SPI 控制器为 READY 状态），再检查子设备地址是否正确。
 
 验证步骤：
@@ -89,14 +89,14 @@ title: 常见问题排查 (FAQ)
 
 解决方案：
 - 波特率不匹配：检查 DTS 中 `current-speed` 属性与串口工具设置一致（通常 115200 8N1）。
-- UART 引脚被占用：检查 `pinctrl-0` 是否将 UART TX/RX 引脚配置为其他功能，使用 `west build -t pinctrl` 确认。
+- UART 引脚被占用：检查 `pinctrl-0` 是否将 UART TX/RX 引脚配置为其他功能，对照 `build/zephyr/zephyr.dts` 确认。
 - LOG 后端未启用：确认 `CONFIG_LOG_BACKEND_UART=y` 或 `CONFIG_LOG_BACKEND_RTT=y`。
-- 置一个最小化测试：在 `main()` 第一行调用 `printk("Hello\n")`，排除日志框架本身的问题。
+- 设一个最小化测试：在 `main()` 第一行调用 `printk("Hello\n")`，排除日志框架本身的问题。
 
 验证步骤：
 - 用示波器确认 TX 引脚在启动后能输出数据波形，波特率测量值匹配设定值（±2%）。
 - 串口终端（如 PuTTY、Tera Term、minicom）正确配置后能收到 `uart:~$ ` Shell 提示符。
-- 输入 `log enable all` 后能看到各模块日志输出。
+- 输入 `log enable dbg <模块名>` 后能看到对应模块的调试日志输出。
 
 问题 3：I²C/SPI 通讯异常
 
@@ -121,8 +121,8 @@ title: 常见问题排查 (FAQ)
 问题 1：系统无法进入 DEEP SLEEP
 
 诊断方法：
-- 执行 Shell 命令 `power info` 查看当前电源状态和驻留时间，确认系统是否尝试进入低功耗模式。
-- 执行 `pm` 命令查看 wakelock 列表，确认是否有活跃的唤醒锁阻止睡眠。常见来源：未关闭的外设、活跃的定时器、主机通信未完成。
+- 执行 Shell 命令 `pm` 相关子命令（需 `CONFIG_PM=y`）查看/测试电源管理状态，确认系统是否尝试进入低功耗模式。
+- 执行 `pm` 命令与 `device list` 查看 wakelock/设备电源状态，确认是否有活跃的唤醒源阻止睡眠。常见来源：未关闭的外设、活跃的定时器、主机通信未完成。
 - 检查是否有线程处于 RUNNABLE 状态：`kernel stacks` 查看各线程调用栈，`kernel cycles` 查看 CPU 占用，确认没有线程持续占用 CPU 导致 idle 线程无法休眠。
 
 解决方案：
@@ -152,7 +152,7 @@ title: 常见问题排查 (FAQ)
 
 验证步骤：
 - 逐一禁用外设后重新测量功耗，定位主要功耗来源。
-- 对比数据手册中该模式下各电源域的理论功耗值，差值 &lt; 10% 为正常。
+- 对比数据手册中该模式下各电源域的理论功耗值，差值 < 10% 为正常。
 - 记录优化前后的功耗对比，确认改善效果。
 
 ## 内存与栈问题
@@ -199,7 +199,7 @@ title: 常见问题排查 (FAQ)
 问题 1：OTA 传输失败 / CRC 校验错误
 
 诊断方法：
-- 检查传输日志中每包的序号、长度、CRC 值，确认是否有丢包或乱序。使用 `dmesg | grep -i ota` 查看 OTA 模块日志。
+- 检查传输日志中每包的序号、长度、CRC 值，确认是否有丢包或乱序。EC 固件没有 Linux 式 `dmesg`——用 `log` 模块输出 OTA 日志，或在 Shell 中调高 OTA 模块日志级别后复现。
 - 测量通讯接口（UART/I2C/SPI）的波形质量：边沿抖动、信号完整性、是否存在电磁干扰导致的误码。
 - 分别计算源端和目标端的 CRC32，对比二者是否一致，确认 CRC 算法实现（多项式、初始值、输出异或值）相同。
 
@@ -224,7 +224,7 @@ title: 常见问题排查 (FAQ)
 解决方案：
 - 写入前确保已擦除：Flash 写入只能将 1→0，需先调用 `flash_erase()` 将目标区域恢复为全 1（0xFF）。
 - 检查对齐要求：写入地址必须对齐到 Flash 编程单元大小（用 `flash_get_write_block_size()` 查询），长度须为编程单元的整数倍。
-- 检查写保护：某些 MCU 默认启用 Flash 写保护（FWP），需在初始化时解锁：`flash_write_protection_set(dev, false)`。
+- 检查写保护：Zephyr 3.7 的 Flash 驱动在每次写操作时自行管理写保护，应用层无需（也没有）`flash_write_protection_set()` API；若芯片存在**选项字节/批擦除级**写保护（如 RDP、WP 引脚拉高），按芯片手册流程解锁。
 - 确保写入区域不与运行代码重叠：使用 `zephyr,code-partition` 和 `storage_partition` 正确分区，避免覆盖正在执行的代码。
 
 验证步骤：

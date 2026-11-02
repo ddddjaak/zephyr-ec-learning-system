@@ -245,8 +245,8 @@ CONFIG_LOG_DEFAULT_LEVEL=3
 # 日志后端：串口输出
 CONFIG_LOG_BACKEND_UART=y
 
-# 日志时间戳
-CONFIG_LOG_TIMESTAMP=y
+# 日志时间戳（默认已启用；64 位时间戳可显式开启）
+# CONFIG_LOG_TIMESTAMP_64BIT=y
 
 # 日志颜色输出
 CONFIG_LOG_BACKEND_SHOW_COLOR=y
@@ -299,11 +299,11 @@ CONFIG_THREAD_NAME=y
 # 优化配置
 # ============================================================================
 
-# 编译优化级别：0=无优化, 1=O1, 2=O2, 3=O3, s=Os（体积优化）
-CONFIG_COMPILER_OPTIMIZATIONS="2"
-
-# 代码体积优化（如果需要）
-# CONFIG_SIZE_OPTIMIZATIONS=y
+# 编译优化级别是互斥 choice，四选一（默认按体积优化）：
+# CONFIG_SPEED_OPTIMIZATIONS=y     # 按速度优化（-O2）
+# CONFIG_SIZE_OPTIMIZATIONS=y      # 按体积优化（-Os，默认）
+# CONFIG_DEBUG_OPTIMIZATIONS=y     # 调试优化（-Og，单步友好）
+# CONFIG_NO_OPTIMIZATIONS=y        # 无优化（-O0，仅深度调试）
 ```
 
 
@@ -323,14 +323,13 @@ CONFIG_COMPILER_OPTIMIZATIONS="2"
 
 | 选项 | 说明 | 适用场景 |
 |------|------|----------|
-| `CONFIG_COMPILER_OPTIMIZATIONS="0"` | 无优化（-O0） | 调试阶段，便于单步调试 |
-| `CONFIG_COMPILER_OPTIMIZATIONS="1"` | 基本优化（-O1） | 平衡调试和性能 |
-| `CONFIG_COMPILER_OPTIMIZATIONS="2"` | 标准优化（-O2） | 生产环境，推荐设置 |
-| `CONFIG_COMPILER_OPTIMIZATIONS="3"` | 激进优化（-O3） | 追求最高性能 |
-| `CONFIG_SIZE_OPTIMIZATIONS=y` | 体积优化（-Os） | 存储空间受限的场景 |
+| `CONFIG_NO_OPTIMIZATIONS=y` | 无优化（-O0） | 深度调试，逐语句单步 |
+| `CONFIG_DEBUG_OPTIMIZATIONS=y` | 调试优化（-Og） | 调试与性能平衡 |
+| `CONFIG_SPEED_OPTIMIZATIONS=y` | 速度优化（-O2） | 性能敏感路径 |
+| `CONFIG_SIZE_OPTIMIZATIONS=y` | 体积优化（-Os，默认） | EC 固件常规选择，Flash 紧张时首选 |
 
 :::warning[配置冲突注意事项]
-1. **互斥选项**：某些配置选项是互斥的，例如 `CONFIG_COMPILER_OPTIMIZATIONS` 和 `CONFIG_SIZE_OPTIMIZATIONS` 不能同时使用
+1. **互斥选项**：编译优化级别是 Kconfig `choice`，四个选项只能生效一个；在 `prj.conf` 里写多个时后写者覆盖先写者，以 `build/zephyr/.config` 为准
 2. **依赖关系**：某些选项依赖其他选项，例如 `CONFIG_LOG_BACKEND_UART` 需要先启用 `CONFIG_LOG` 和 `CONFIG_SERIAL`
 3. **板级限制**：某些配置可能受到硬件限制，例如某些板子不支持特定的外设
 4. **内存限制**：启用过多功能可能导致内存不足，需要根据实际硬件资源调整配置
@@ -698,8 +697,8 @@ CONFIG_SPI=y
 CONFIG_SENSOR=y
 CONFIG_BME280=y
 
-# 优化配置
-CONFIG_COMPILER_OPTIMIZATIONS="2"
+# 优化配置（choice 互斥，选其一）
+CONFIG_SIZE_OPTIMIZATIONS=y
 ```
 
 **配置优先级**：

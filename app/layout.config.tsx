@@ -23,6 +23,11 @@ export const baseOptions: BaseLayoutProps = {
       active: 'nested-url',
     },
     {
+      text: 'Zephyr 内核',
+      url: '/docs/zephyr-kernel',
+      active: 'nested-url',
+    },
+    {
       text: '移植指南',
       url: '/docs/porting',
       active: 'nested-url',

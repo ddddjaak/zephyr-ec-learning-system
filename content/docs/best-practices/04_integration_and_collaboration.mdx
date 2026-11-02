@@ -15,8 +15,7 @@ GUI、工厂测试系统等配合。因此协作开发与接口定义尤为重�
 - 对上层主机（Host）隐藏底层差异，如：
 
 ```c
-  int ec_get_battery_status(struct ec_battery_info \*info);
-
+  int ec_get_battery_status(struct ec_battery_info *info);
 ```
 
 - 保持接口的前向兼容性，新增字段应追加在结构体尾部。
@@ -34,9 +33,9 @@ GUI、工厂测试系统等配合。因此协作开发与接口定义尤为重�
 - 在集成阶段启用 Shell 命令接口，实时查看模块状态：
 
 ```
-uart:\~\$ power status
+uart:~$ power status
 
-uart:\~\$ battery info
+uart:~$ battery info
 ```
 
 - 使用 LOG_MODULE_REGISTER(module, level) 进行模块化日志输出。

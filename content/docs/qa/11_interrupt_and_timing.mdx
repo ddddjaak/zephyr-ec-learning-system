@@ -59,7 +59,7 @@ title: 中断与时延调试
 1. **定位** — 找出关中断最长的代码段：
    ```bash
    # Zephyr Shell 查看中断关闭统计
-   kernel timing
+   kernel cycles   # 查看 CPU 周期统计
    ```
 2. 在怀疑的临界区前后加 GPIO toggle，用示波器测量 duration
 3. **根因** — 常见原因：
@@ -128,6 +128,6 @@ title: 中断与时延调试
 | 工具 | 用途 | 命令示例 |
 |------|------|----------|
 | 示波器 + GPIO toggle | ISR 时延/关中断时长 | 触发模式 + 光标测量 |
-| Zephyr Shell `kernel` | 系统 tick/线程信息 | `kernel timing` / `kernel cycles` |
+| Zephyr Shell `kernel` | 系统 tick/线程信息 | `kernel cycles` / `kernel stacks` |
 | J-Link SystemView | RTOS 事件可视化 | 实时查看 ISR/线程切换 |
 | Logic Analyzer | 多信号时序分析 | 同时抓中断线+GPIO+总线 |

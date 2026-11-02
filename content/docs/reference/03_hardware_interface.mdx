@@ -208,8 +208,8 @@ CSCE250X 的 eSPI 从机控制器支持 4 个标准通道。以下给出各通�
 
 | 模式 | 寄存器值 | 说明 |
 |------|----------|------|
-| MAFS (Master-Attached Flash Sharing) | `0x00000000` | 主控通过 eSPI 访问 EC 侧 Flash |
-| SAFS (Slave-Attached Flash Sharing) | `0x00000800` | EC 侧 Flash 共享给主控访问 |
+| MAFS (Master-Attached Flash Sharing) | `0x00000000` | Flash 挂在**主控（PCH）侧**，EC 经由主控访问 Flash |
+| SAFS (Slave-Attached Flash Sharing) | `0x00000800` | Flash 挂在 **EC（slave）侧**，主控经由 EC 访问 Flash |
 
 | SAFS 块擦除大小 | 寄存器值 |
 |-----------------|----------|

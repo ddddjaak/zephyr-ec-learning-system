@@ -14,9 +14,9 @@ title: GPIO / Pinmux 调试
 
 1. **定位** — 使用 Zephyr 的 pinmux 调试命令：
    ```bash
-   west build -t pinctrl   # 查看所有引脚分配
+   west build   # 重新构建后查看设备树
    ```
-2. 检查生成的 `build/zephyr/pinctrl_map.c` 中是否有冲突
+2. 检查 `build/zephyr/zephyr.dts` 中各节点的 `pinctrl-0` 定义是否有冲突
 3. **根因** — 常见原因：
    - 两个 DT 节点配置了同一个物理引脚
    - 某驱动的 `pinctrl-0` 覆盖了另一个驱动的引脚配置
@@ -30,7 +30,7 @@ title: GPIO / Pinmux 调试
 
 1. 确认 GPIO 引脚是否在运行时被其他外设重新配置
 2. 检查是否有 DT overlay 在启动后期才应用，导致引脚功能被覆盖
-3. 用 `west build -t pinctrl` 检查最终引脚映射
+3. 构建后检查 `build/zephyr/zephyr.dts` 中的最终引脚映射
 
 ---
 
@@ -119,8 +119,8 @@ title: GPIO / Pinmux 调试
 
 | 工具 | 用途 | 命令示例 |
 |------|------|----------|
-| `west build -t pinctrl` | 引脚分配查看 | 列出所有引脚功能 |
-| `build/zephyr/pinctrl_map.c` | 最终引脚映射 | 文本文件，直接查看 |
+| `build/zephyr/zephyr.dts` | 引脚分配查看 | 各节点 pinctrl-0 定义，直接查看 |
+| `build/zephyr/devicetree_generated.h` | 生成的引脚宏 | 编译期生成的 DT 宏 |
 | 万用表 | 电平/上拉检测 | 测直流电压 + 电阻 |
 | 示波器 | 信号波形 | 看边沿速度/振铃/串扰 |
 | Zephyr Shell `gpio` | GPIO 手动控制 | `gpio get PORT0 3` / `gpio set PORT0 3 1` |

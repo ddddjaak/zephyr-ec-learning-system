@@ -16,13 +16,13 @@ title: 构建、烧录与验证
 
 ```bash
 # 完整构建
-west build -b csce250x_evb app/ -p
+west build -b csce250x_evb app/ -p --build-dir build/ec_fw
 
 # 仅构建指定配置
-west build -b csce250x_evb app/ -- -DCONFIG_LOG=y
+west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DCONFIG_LOG=y
 
 # 使用额外覆盖配置
-west build -b csce250x_evb app/ -- -DOVERLAY_CONFIG=release.conf
+west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DOVERLAY_CONFIG=release.conf
 ```
 
 编译零警告零错误即通过。产物生成在 `build/ec_fw/` 目录。

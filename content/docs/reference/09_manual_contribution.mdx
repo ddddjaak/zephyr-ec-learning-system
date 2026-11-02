@@ -1,0 +1,69 @@
+---
+title: 手册维护与贡献指南
+description: 如何新增/修改手册页面、命名与导航约定、本地预览与发布流程
+---
+
+手册是团队资产：FAE 在客户现场发现的文档缺口、AE 在评估中踩到的新坑、固件工程师写完模块后的经验，都应该回到这里。本页说明如何以最低成本贡献一页高质量的文档。
+
+## 贡献什么
+
+| 类型 | 例子 | 放哪里 |
+|------|------|--------|
+| 新功能/新模块说明 | 新增传感器 Hub 模块 | `content/docs/development/modules/NN_xxx.mdx` |
+| 踩坑记录（可复现+解法） | 某 I2C 器件上电时序问题 | `content/docs/qa/` 对应类别，或新增类别 |
+| 最佳实践总结 | 中断里不能做什么的团队约定 | `content/docs/best-practices/` |
+| 速查表/参考 | 新增命令、寄存器表、错误码 | `content/docs/reference/` |
+| 勘误 | 修正过时 API、错误结论 | 直接改对应页面 |
+
+## 新增页面的硬性约定
+
+1. **文件命名**：章节内按阅读顺序编号，`NN_短横线英文名.mdx`；编号必须与 `meta.json` 中的顺序一致（新增到中间时，后续文件与 meta.json 一起重排）。
+2. **Frontmatter**：至少 `title: 中文标题`；建议加 `description:` 供搜索与卡片使用。
+3. **导航注册**：在所在目录的 `meta.json` 的 `pages` 数组中加入文件名（不含扩展名），`index` 永远排首位。
+4. **内部链接**：一律 `/docs/...` 绝对路径。**禁止**写 `/zephyr-ec-learning-system/...` 部署前缀（由框架自动补全，硬编码会在仓库改名后全部失效）。
+5. **标题层级**：页面模板渲染 h1，正文从 `##` 开始，逐级递进，不跳级。
+6. **代码块**：用已注册语言标记（`c` / `bash` / `dts` / `kconfig` / `ini` / `yaml` / `cmake` / `powershell` / `mermaid` 等）；Windows/Linux 差异用 `<Tabs>` 包裹。
+7. **禁止** MDX 里写 `class=`（用 `className=`）、禁止相对链接。
+
+## 推荐的页面结构
+
+一页好的技术文档通常长这样（参考 [Kconfig 速查](/docs/reference/05_kconfig_cheatsheet)）：
+
+1. **一句话说清本页解决什么问题**（开头 1~2 段）。
+2. **正文按使用场景分组**，表格优先于大段文字。
+3. **可复制的命令/代码**——每段代码自包含，能直接跑。
+4. **`:::note` / `:::warning` 提示框**放经验结论与易错点，不放大段正文。
+5. **结尾"相关页面"**：链接本站内上下游页面，形成网状知识结构。
+
+## 本地预览与验证
+
+```bash
+npm install        # 首次
+npm run dev        # localhost:3000/zephyr-ec-learning-system/ 实时预览
+npm run build:static  # 提交前跑一次，确认静态导出无报错
+```
+
+提交前自检清单：
+
+- [ ] `npm run build:static` 通过
+- [ ] 新页面在侧边栏出现且位置正确（meta.json 生效）
+- [ ] 页面内所有 `/docs/...` 链接点得通（目标页面存在）
+- [ ] 代码块语言标记正确，暗色主题下表格/图表可读
+- [ ] 搜索能搜到新页面标题（`public/api/search.json` 由 prebuild 自动重建）
+
+## 发布流程
+
+1. 功能分支上提交（遵循[代码规范与提交](/docs/best-practices/01_coding_style_and_commits)的 commit 格式，类型用 `docs:` / `fix:` / `feat:`）。
+2. 合入 `main` 后 CI 自动部署到 GitHub Pages（`.github/workflows/deploy.yml`），无需手工发布。
+3. 涉及**新增章节或页面数量变化**时，同步更新[版本与变更](/docs/reference/08_release_notes)与首页"XX 页技术文档"数字（`app/(home)/_sections/delivery-section.tsx`）。
+
+## 常见问题
+
+**Q：改了 `source.config.ts` / meta.json 之后侧边栏没变化？**
+A：MDX 配置变更需重启 `npm run dev` 让 `.source/` 重新生成。
+
+**Q：页面在本地能打开，部署后 404？**
+A：检查 `lib/static-slugs.ts` 是否包含该 slug——它由 prebuild 脚本自动生成，只要文件在 `content/docs/` 下构建时就会收录；若手动改过 slug 生成逻辑需重新构建。
+
+**Q：文档里的代码和固件仓库对不上？**
+A：文档示例面向 Zephyr 3.7 LTS 通用写法；平台专属实现以固件仓库为准，发现不一致请按"勘误"流程反馈。

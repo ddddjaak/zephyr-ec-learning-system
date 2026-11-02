@@ -124,7 +124,7 @@ EC-ZEPHYR
 west zephyr-export
 ```
 
-> **这条命令做了什么：** 在 Windows 注册表中向 CMake 注册 Zephyr 包的位置。具体写入路径为 `HKEY_CURRENT_USER\Software\Kitware\CMake\Packages\Zephyr`，值是 Zephyr CMake 配置文件的路径。这样后续 `cmake` 命令可以通过 `find_package(Zephyr)` 自动定位 Zephyr SDK 的位置，无需手动设置环境变量。这条命令**只写入当前用户的注册表**（HKCU），不影响系统全局（HKLM），也不会修改任何文件。
+> **这条命令做了什么：** 在 Windows 注册表中向 CMake 注册 Zephyr 包的位置。具体写入路径为 `HKEY_CURRENT_USER\Software\Kitware\CMake\Packages\Zephyr`，值是 **Zephyr 源码**（`zephyr_fork`）的 CMake 包配置文件路径。这样工程里的 `find_package(Zephyr)` 能自动定位 Zephyr 源码树，无需手动设置 `ZEPHYR_BASE` 环境变量（交叉编译器则由 `ZEPHYR_SDK_INSTALL_DIR` 指向的 Zephyr SDK 提供）。这条命令**只写入当前用户的注册表**（HKCU），不影响系统全局（HKLM），也不会修改任何文件。
 
 成功日志示例：
 
@@ -414,15 +414,12 @@ export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk-0.16.8         # 非默认路�
 
 ```bash
 cd ~/EC-Zephyr/ecfw-zephyr
-bash build.bat
+west build -b <board_name> . --build-dir build/ec_fw
 ```
 
-> **这条命令做了什么：** 与 Windows 编译步骤完全相同——执行 Kconfig 解析 → 设备树编译 → CMake 构建 → GCC 交叉编译 → ELF 链接 → HEX/BIN 转换这一完整流水线。所有操作都是本地文件读写和本地编译器调用，**不产生网络连接**。编译产物输出到 `build/ec_fw/` 目录。
+> **这条命令做了什么：** 执行 Kconfig 解析 → 设备树编译 → CMake 构建 → GCC 交叉编译 → ELF 链接 → HEX/BIN 转换这一完整流水线。所有操作都是本地文件读写和本地编译器调用，**不产生网络连接**。编译产物输出到 `build/ec_fw/` 目录。
 
-> **注意：** 项目提供的 `build.bat` 为 Windows 批处理脚本，无法在 Linux 下直接运行。实际使用以下等价命令：
-> ```bash
-> west build -b <board_name> . --build-dir build/ec_fw
-> ```
+> **说明：** Windows 用户可以使用项目提供的 `build.bat` 批处理脚本（内部等价于上面的 `west build` 命令）；`<board_name>` 替换为目标板名。
 
 ### 烧录测试
 

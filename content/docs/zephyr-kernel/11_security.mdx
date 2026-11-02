@@ -331,8 +331,8 @@ stateDiagram-v2
 # DFU 支持
 CONFIG_IMG_MANAGER=y
 CONFIG_MCUMGR=y
-CONFIG_MCUMGR_CMD_IMG_MGMT=y
-CONFIG_MCUMGR_CMD_OS_MGMT=y
+CONFIG_MCUMGR_GRP_IMG=y
+CONFIG_MCUMGR_GRP_OS=y
 
 # Flash 支持
 CONFIG_FLASH=y
@@ -340,9 +340,9 @@ CONFIG_FLASH_MAP=y
 CONFIG_STREAM_FLASH=y
 
 # 网络传输（根据需要选择）
-CONFIG_MCUMGR_SMP_BT=y          # 蓝牙传输
-# CONFIG_MCUMGR_SMP_UART=y      # 串口传输
-# CONFIG_MCUMGR_SMP_UDP=y       # UDP 传输
+CONFIG_MCUMGR_TRANSPORT_BT=y          # 蓝牙传输
+# CONFIG_MCUMGR_TRANSPORT_UART=y      # 串口传输
+# CONFIG_MCUMGR_TRANSPORT_UDP=y       # UDP 传输
 ```
 
 #### OTA 升级代码示例
@@ -1563,14 +1563,14 @@ west flash --hex-file build/zephyr/zephyr.signed.hex
 # DFU 支持
 CONFIG_IMG_MANAGER=y
 CONFIG_MCUMGR=y
-CONFIG_MCUMGR_CMD_IMG_MGMT=y
-CONFIG_MCUMGR_CMD_OS_MGMT=y
+CONFIG_MCUMGR_GRP_IMG=y
+CONFIG_MCUMGR_GRP_OS=y
 
 # 蓝牙传输
 CONFIG_BT=y
 CONFIG_BT_PERIPHERAL=y
-CONFIG_MCUMGR_SMP_BT=y
-CONFIG_MCUMGR_SMP_BT_AUTHEN=n
+CONFIG_MCUMGR_TRANSPORT_BT=y
+CONFIG_MCUMGR_TRANSPORT_BT_AUTHEN=n
 
 # Flash 支持
 CONFIG_FLASH=y
@@ -1581,7 +1581,7 @@ CONFIG_STREAM_FLASH=y
 2. **实现 OTA 逻辑**
 
 ```c
-#include <zephyr/mgmt/mcumgr/smp_bt.h>
+#include <zephyr/mgmt/mcumgr/transport/smp_bt.h>
 #include <zephyr/dfu/mcuboot.h>
 
 void main(void)

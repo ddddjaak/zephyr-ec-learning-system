@@ -167,18 +167,28 @@ static int gpio_csce250x_init(const struct device *dev)
     return 0;
 }
 
-DEVICE_DT_INST_DEFINE(
-    gpio_csce250x_init,
-    NULL,
-    NULL,
-    NULL,
-    NULL,
-    PRE_KERNEL_1,
-    CONFIG_GPIO_INIT_PRIORITY,
-    &gpio_api);
+DEVICE_DT_INST_DEFINE(inst,
+                      gpio_csce250x_init,
+                      NULL,
+                      NULL,
+                      NULL,
+                      PRE_KERNEL_1,
+                      CONFIG_GPIO_INIT_PRIORITY,
+                      &gpio_api);
 ```
 
-请参考3.2驱动、设备树与Kconfig的关系中关于 binding 生成流程的详细说明。
+注意：`DEVICE_DT_INST_DEFINE` 的第一个参数是**实例号 `inst`**（不是 init 函数），init 函数是第二个参数。上面的调用应放在宏内、由 `DT_INST_FOREACH_STATUS_OKAY` 对每个 `status = "okay"` 的实例展开一次：
+
+```c
+#define GPIO_CSCE250X_INIT(inst)                                      \
+    DEVICE_DT_INST_DEFINE(inst, gpio_csce250x_init, NULL, NULL, NULL, \
+                          PRE_KERNEL_1, CONFIG_GPIO_INIT_PRIORITY,    \
+                          &gpio_api);
+
+DT_INST_FOREACH_STATUS_OKAY(GPIO_CSCE250X_INIT)
+```
+
+驱动、设备树与 Kconfig 三者的关系（binding 如何生成 `devicetree_generated.h`）详见 [Kconfig 配置系统](/docs/development/appdev/02_kconfig_system)中的对应小节。
 
 ## 驱动裁剪与适配
 

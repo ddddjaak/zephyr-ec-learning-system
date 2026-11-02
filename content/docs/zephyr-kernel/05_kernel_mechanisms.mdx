@@ -219,13 +219,19 @@ void check_stack_usage(void)
 {
     struct k_thread *current = k_current_get();
     size_t unused;
-    
-    // 获取未使用的栈空间
-    unused = k_thread_stack_space_get(current, NULL);
-    
+
+    // 未使用的栈空间通过第二个出参返回，函数返回值为状态码
+    int ret = k_thread_stack_space_get(current, &unused);
+
+    if (ret != 0) {
+        // 线程尚未运行过或无法测量时返回非 0
+        printk("无法测量栈使用情况（线程可能尚未调度）\n");
+        return;
+    }
+
     printk("当前线程栈使用情况：\n");
     printk("  未使用空间: %zu 字节\n", unused);
-    
+
     if (unused < 128) {
         printk("  警告：栈空间不足！\n");
     }
@@ -1091,7 +1097,7 @@ CONFIG_THREAD_STACK_INFO=y
 CONFIG_THREAD_MONITOR=y
 
 # 启用栈哨兵（检测栈溢出）
-CONFIG_THREAD_STACK_SENTINEL=y
+CONFIG_STACK_SENTINEL=y
 ```
 
 #### 测量栈使用
@@ -1099,42 +1105,42 @@ CONFIG_THREAD_STACK_SENTINEL=y
 ```c
 #include <zephyr/kernel.h>
 
+static void stack_report_cb(struct k_thread *thread, void *user_data)
+{
+    size_t size = thread->stack_info.size;
+    size_t unused = 0;
+    const char *name;
+
+    // 未使用空间经出参返回；线程尚未运行过时返回非 0
+    if (k_thread_stack_space_get(thread, &unused) != 0) {
+        return;
+    }
+    size_t used = size - unused;
+    int usage_percent = (used * 100) / size;
+
+    name = k_thread_name_get(thread);
+    if (name == NULL) {
+        name = "<unnamed>";
+    }
+
+    printk("%-20s %8zu %8zu %8zu %4d%%\n",
+           name, size, used, unused, usage_percent);
+
+    // 警告：栈使用率超过 80%
+    if (usage_percent > 80) {
+        printk("  ⚠️  警告：线程 %s 栈使用率过高！\n", name);
+    }
+}
+
 void analyze_stack_usage(void)
 {
-    struct k_thread *thread;
-    size_t unused;
-    const char *name;
-    
     printk("\n线程栈使用情况分析：\n");
-    printk("%-20s %8s %8s %8s %5s\n", 
+    printk("%-20s %8s %8s %8s %5s\n",
            "线程名", "栈大小", "已用", "未用", "使用率");
     printk("------------------------------------------------------------\n");
-    
-    // 遍历所有线程
-    thread = k_thread_info_get();
-    while (thread != NULL) {
-        size_t size = thread->stack_info.size;
-        
-        // 获取未使用的栈空间
-        unused = k_thread_stack_space_get(thread, NULL);
-        size_t used = size - unused;
-        int usage_percent = (used * 100) / size;
-        
-        name = k_thread_name_get(thread);
-        if (name == NULL) {
-            name = "<unnamed>";
-        }
-        
-        printk("%-20s %8zu %8zu %8zu %4d%%\n",
-               name, size, used, unused, usage_percent);
-        
-        // 警告：栈使用率超过 80%
-        if (usage_percent > 80) {
-            printk("  ⚠️  警告：栈使用率过高！\n");
-        }
-        
-        thread = k_thread_info_get_next(thread);
-    }
+
+    // 遍历所有线程（需 CONFIG_THREAD_MONITOR=y）
+    k_thread_foreach(stack_report_cb, NULL);
 }
 ```
 
@@ -1391,30 +1397,32 @@ CONFIG_THREAD_RUNTIME_STATS=y
 ```
 
 ```c
+static void thread_stats_cb(struct k_thread *thread, void *user_data)
+{
+    k_thread_runtime_stats_t stats;
+    k_thread_runtime_stats_get(thread, &stats);
+
+    const char *name = k_thread_name_get(thread);
+    if (name == NULL) {
+        name = "<unnamed>";
+    }
+
+    if (stats.total_cycles == 0) {
+        return;  /* 刚创建尚未调度的线程无统计数据 */
+    }
+
+    printk("%-20s %15llu %9llu%%\n",
+           name, stats.execution_cycles,
+           stats.execution_cycles * 100 / stats.total_cycles);
+}
+
 void print_thread_stats(void)
 {
-    struct k_thread *thread;
-    k_thread_runtime_stats_t stats;
-    
     printk("\n线程运行时统计：\n");
     printk("%-20s %15s %10s\n", "线程名", "执行周期", "使用率");
     printk("------------------------------------------------\n");
-    
-    thread = k_thread_info_get();
-    while (thread != NULL) {
-        k_thread_runtime_stats_get(thread, &stats);
-        
-        const char *name = k_thread_name_get(thread);
-        if (name == NULL) {
-            name = "<unnamed>";
-        }
-        
-        printk("%-20s %15llu %9llu%%\n",
-               name, stats.execution_cycles, 
-               stats.execution_cycles * 100 / stats.total_cycles);
-        
-        thread = k_thread_info_get_next(thread);
-    }
+
+    k_thread_foreach(thread_stats_cb, NULL);
 }
 ```
 

@@ -11,7 +11,7 @@ title: 架构分层模型
   <div className="arch-layer-body">
     <span className="arch-layer-title">① EC 应用层</span>
     <div className="arch-layer-badges">
-      <span className="arch-layer-badge">15 个模块</span>
+      <span className="arch-layer-badge">13 个模块</span>
       <span className="arch-layer-badge">线程模型</span>
       <span className="arch-layer-badge">app/</span>
     </div>
@@ -32,7 +32,7 @@ title: 架构分层模型
     </div>
   </div>
   <p className="arch-layer-desc">
-    eSPI、KSCAN、ACPI、PECI、Fan、LED、USB、PS2、Flash/OTA、Port80、I2C-MPS、VCI 等 EC 专用驱动。基于 Zephyr 设备模型（<code>DEVICE_DT_DEFINE</code>）注册，由内核通过 <code>device_ioctl_traversal</code> 统一调度。任务管理（<code>misc/task_handler.c</code>）和通用库（<code>lib/</code>）也在此层。
+    eSPI、KSCAN、ACPI、PECI、Fan、LED、USB、PS2、Flash/OTA、Port80、I2C-MPS、VCI 等 EC 专用驱动。基于 Zephyr 设备模型（<code>DEVICE_DT_DEFINE</code>）注册；驱动统一调度由芯海 EC 框架扩展的 <code>device_ioctl_traversal</code> 机制完成（Zephyr 上游无此 API，属本方案定制层）。任务管理（<code>misc/task_handler.c</code>）和通用库（<code>lib/</code>）也在此层。
   </p>
 </div>
 
@@ -103,7 +103,7 @@ app 线程 ──k_sleep()/k_sem_take()/device_ioctl(dev)──▶ Zephyr 内核
 
 ### ① EC 应用层 — `app/`
 
-15 个功能模块，每个由独立 Zephyr 线程驱动（`K_THREAD_DEFINE`），周期性运行。
+13 个功能模块，每个由独立 Zephyr 线程驱动（`K_THREAD_DEFINE`），周期性运行。
 
 | 模块 | 线程周期 | 核心职责 |
 |------|----------|----------|
@@ -116,7 +116,7 @@ app 线程 ──k_sleep()/k_sem_take()/device_ioctl(dev)──▶ Zephyr 内核
 | `power_sequencing` | 1ms | 上电时序控制（`pwrseq_thread`） |
 | `debug` | 按需 | Shell 命令、诊断转储、RTT 日志 |
 
-> 每个模块**直接调用 Zephyr API**（`k_sleep`、`k_sem_take`、`device_ioctl` 等），不经过中间封装。
+> 每个模块**直接调用 Zephyr API**（`k_sleep`、`k_sem_take` 等）与 EC 框架扩展的 `device_ioctl` 接口（框架定制 API，非 Zephyr 上游），不经过中间封装。
 
 ### ② EC 驱动层 — `drivers/` + `misc/` + `lib/`
 
@@ -138,7 +138,7 @@ Zephyr LTS 内核（fork），提供 EC 固件的运行时基础：
 
 - **内核** (`kernel/`)：抢占式线程调度（默认）、互斥锁、信号量、消息队列、工作队列、定时器
 - **子系统** (`subsys/`)：Logging（分级日志）、Shell（UART 命令行）、PM（电源管理）、Storage（Flash Map / 设置存储）
-- **设备模型**：`struct device` + `DEVICE_DT_DEFINE` 统一驱动注册框架，主循环 `device_ioctl_traversal` 遍历调度
+- **设备模型**：`struct device` + `DEVICE_DT_DEFINE` 统一驱动注册框架；主循环经 EC 框架扩展的 `device_ioctl_traversal` 遍历调度（框架定制机制，非 Zephyr 上游 API）
 
 ### ④ 芯海芯片 HAL + 片上外设 — `ecfwwork/zephyr_modules_csce250x/`
 

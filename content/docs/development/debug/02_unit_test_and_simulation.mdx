@@ -23,7 +23,7 @@ Zephyr 内置了 `ztest` 单元测试框架，专为嵌入式场景设计，支�
 核心 API： `ZTEST(suite_name, test_name)` 宏用于定义测试用例，`zassert_*()` 系列宏用于断言验证。常用断言包括 `zassert_equal()`、`zassert_true()`、`zassert_within()` 等。以下是测试电池充电百分比计算的完整示例：
 
 ```c
-#include &lt;zephyr/ztest.h&gt;
+#include <zephyr/ztest.h>
 
 ZTEST(battery_test, test_charge_percent)
 {
@@ -174,6 +174,6 @@ jobs:
 
    ```bash
    west twister -T tests/ --platform native_sim --platform qemu_cortex_m3 \
-     --inline-logs --xml-report report.xml
+     --inline-logs --ninja # 报告自动生成在输出目录（twister.json / twister.xml）
    ```
 

@@ -324,6 +324,10 @@ export const staticSlugs: string[][] = [
     "08_release_notes"
   ],
   [
+    "reference",
+    "09_manual_contribution"
+  ],
+  [
     "reference"
   ],
   [

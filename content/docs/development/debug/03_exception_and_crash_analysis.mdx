@@ -2,146 +2,121 @@
 title: 异常监控与崩溃分析（Fatal Error / Assert / Dump）
 ---
 
-
 在嵌入式控制器（EC）固件中，系统可靠性至关重要。由于固件通常运行在无操作系统保护、无显示界面的实时环境中，一旦出现异常（如栈溢出、非法访问、断言失败等），若无法有效捕获与分析，将严重影响系统稳定性与可维护性。
 
-Zephyr
-提供了完善的异常处理机制与崩溃分析框架，可在系统出错时输出上下文信息，帮助开发者快速定位问题。
+Zephyr 提供了完善的异常处理机制与崩溃分析框架，可在系统出错时输出上下文信息，帮助开发者快速定位问题。
 
 ## 异常类型与触发机制
 
 Zephyr 中的异常主要分为三类：
 
-  -------------- ------------------------------------------------ ------------------------------------------------------
-       类型                            说明                                              常见原因
+| 类型 | 说明 | 常见原因 |
+|------|------|----------|
+| Fatal Error | Zephyr 内核捕获的严重错误，通常导致系统进入崩溃状态 | 空指针访问、栈溢出、非法中断上下文调用、任务异常退出 |
+| Assert Failure | 调用 `__ASSERT()` / `__ASSERT_NO_MSG()` 宏时触发的断言错误 | 参数非法、逻辑不一致、状态机异常 |
+| CPU Fault / HardFault | CPU 硬件异常引发，如总线错误或非法指令 | 访问无效地址、除 0 操作、栈破坏、ISR 嵌套溢出 |
 
-   Fatal Error                      由 Zephyr                      空指针访问、栈溢出、非法中断上下文调用、任务异常退出
-                  内核捕获的严重错误，通常导致系统进入崩溃状态。  
-
-  Assert Failure     调用 \_\_ASSERT() 或 \_\_ASSERT_NO_MSG()                参数非法、逻辑不一致、状态机异常
-                               宏时触发的断言错误。               
-
-   CPU Fault /     由 CPU 硬件异常引发，如总线错误或非法指令。        访问无效地址、除 0 操作、栈破坏、ISR 嵌套溢出
-    HardFault                                                     
-  -------------- ------------------------------------------------ ------------------------------------------------------
+错误原因码（日志形如 `ZEPHYR FATAL ERROR n`）与速查见[错误码与崩溃速查](/docs/reference/07_error_codes)。
 
 ## Fatal Error 处理流程
 
 Zephyr 在检测到致命错误时，会调用内核错误处理函数：
 
 ```c
-  void k_sys_fatal_error_handler(unsigned int reason, const struct
-  arch_esf \*esf);
-
+void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf);
 ```
 
 其中：
 
-- reason：错误类型，如 K_ERR_CPU_EXCEPTION、K_ERR_STACK_CHK_FAIL；
-
-- esf：异常堆栈帧结构（Exception Stack Frame），包含寄存器内容。
+- `reason`：错误类型，如 `K_ERR_CPU_EXCEPTION`、`K_ERR_STACK_CHK_FAIL`；
+- `esf`：异常堆栈帧结构（Exception Stack Frame），包含寄存器内容。
 
 默认行为：
 
-- 关闭调度；
+- 打印错误信息与寄存器现场；
+- 结束出错线程；若错误发生在系统关键上下文，则停机。
 
-- 打印错误信息；
-
-- 若配置允许，可进入死循环或自动重启系统。
-
-  可通过 CONFIG_KERNEL_FATAL_HOOK
-  注册用户自定义的异常钩子，用于自定义处理逻辑：
+自定义处理：直接在应用中**覆盖** `k_sys_fatal_error_handler()`（返回 `K_FATAL_ERROR_HANDLED` 可跳过内核默认流程）：
 
 ```c
-void k_sys_fatal_error_handler(unsigned int reason, const struct
-arch_esf \*esf)
+#include <zephyr/kernel.h>
+#include <zephyr/sys/reboot.h>
+#include <zephyr/logging/log.h>
 
+LOG_MODULE_REGISTER(fatal, LOG_LEVEL_INF);
+
+void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 {
+    ARG_UNUSED(esf);
 
-LOG_ERR(\"Fatal error: reason=%d\", reason);
+    LOG_ERR("Fatal error: reason=%d", reason);
 
-dump_esf_registers(esf);
-
-system_reset(); // 可选择重启或进入安全模式
-
+    /* 记录必要现场后选择重启或进入安全模式 */
+    sys_reboot(SYS_REBOOT_COLD);
 }
 ```
+
+:::warning
+自定义 handler 中只做"记录 + 重启"这类最简操作——此时内核状态已不可信，不要尝试恢复调度或调用可能再出错的子系统。
+:::
 
 ## 断言机制（Assert Framework）
 
 断言是开发阶段最重要的防护手段之一，用于在运行时验证条件是否成立：
 
+```c
+__ASSERT(cond, "Condition failed: %d", cond);
 ```
-  \_\_ASSERT(cond, \"Condition failed: %d\", cond);
 
-```
-
-如果 cond 为假，则系统会输出错误信息并触发 k_sys_fatal_error_handler()。
+如果 `cond` 为假，则系统会输出错误信息并进入 `k_sys_fatal_error_handler()`。
 
 可通过配置项启用或禁用断言：
 
-  --------------------------- -------------------------------------------
-            配置项                               说明
-
-        CONFIG_ASSERT=y              启用断言机制（推荐开发阶段）
-
-    CONFIG_ASSERT_VERBOSE=y    输出更详细的断言信息（包含函数名与行号）
-
-   CONFIG_NO_OPTIMIZATIONS=y        保留调试符号，便于定位断言位置
-  --------------------------- -------------------------------------------
+| 配置项 | 说明 |
+|--------|------|
+| `CONFIG_ASSERT=y` | 启用断言机制（推荐开发阶段，量产关闭） |
+| `CONFIG_ASSERT_VERBOSE=y` | 输出更详细的断言信息（包含函数名与行号） |
+| `CONFIG_NO_OPTIMIZATIONS=y` | 无优化编译，便于定位断言位置 |
 
 示例：
 
-```
-  \_\_ASSERT(sensor_value >= 0 && sensor_value \<= 100, \"Sensor out of
-  range!\");
-
+```c
+__ASSERT(sensor_value >= 0 && sensor_value <= 100, "Sensor out of range!");
 ```
 
 ## 崩溃转储（Crash Dump / Stack Dump）
 
-当系统崩溃时，Zephyr 可以自动打印寄存器与栈内容，辅助分析：
+当系统崩溃时，Zephyr 可以自动打印寄存器与栈内容，辅助分析。
 
 输出示例：
 
 ```
-\*\*\*\*\* HARD FAULT \*\*\*\*\*
-
+***** HARD FAULT *****
 Faulting instruction address = 0x00001234
-
 r0: 0x2000abcd r1: 0x00000002 r2: 0x00000000 r3: 0x00000000
-
 r12: 0x00000000 lr: 0x00001a5d pc: 0x00001234 psr: 0x61000000
-
 Fatal fault in thread main! Aborting.
 ```
 
 配制方法：
 
-```
-CONFIG_PRINTK=y #允许内核在崩溃时输出打印信息
-
-CONFIG_LOG=y #启用日志系统，以便输出调试信息
-
-CONFIG_FATAL_ERROR_LOG_LEVEL=3 #控制错误输出等级
-
-CONFIG_THREAD_STACK_INFO=y #启用栈信息打印
-
-CONFIG_EXCEPTION_STACK_TRACE=y #打印完整的堆栈回溯
+```ini
+CONFIG_PRINTK=y                 # 允许内核在崩溃时输出打印信息
+CONFIG_LOG=y                    # 启用日志系统，以便输出调试信息
+CONFIG_KERNEL_LOG_LEVEL=3       # 内核域日志级别（fatal 信息走 kernel 日志域）
+CONFIG_THREAD_STACK_INFO=y      # 启用栈信息打印
+CONFIG_EXCEPTION_STACK_TRACE=y  # 打印完整的堆栈回溯
 ```
 
 若希望在异常时保存转储信息以供后续分析，可启用：
 
-```
-CONFIG_DEBUG_COREDUMP=y #生成内存转储（Core Dump）
-
-CONFIG_DEBUG_COREDUMP_BACKEND_LOGGING=y #通过日志输出转储信息
-
-CONFIG_DEBUG_COREDUMP_MEMORY_DUMP_MIN=y #仅转储必要信息，节省空间
+```ini
+CONFIG_DEBUG_COREDUMP=y                   # 生成内存转储（Core Dump）
+CONFIG_DEBUG_COREDUMP_BACKEND_LOGGING=y   # 通过日志输出转储信息
+CONFIG_DEBUG_COREDUMP_MEMORY_DUMP_MIN=y   # 仅转储必要信息，节省空间
 ```
 
-这些选项常用于 EC 系统中，当崩溃发生时，可通过串口或 RTT 收集 dump
-数据，后续导入符号文件进行解析。
+这些选项常用于 EC 系统中，当崩溃发生时，可通过串口或 RTT 收集 dump 数据，后续用 `west build` 生成的 ELF 符号文件解析定位。
 
 ## 实践案例
 
@@ -149,27 +124,21 @@ CONFIG_DEBUG_COREDUMP_MEMORY_DUMP_MIN=y #仅转储必要信息，节省空间
 
 ```c
 void fan_task(void)
-
 {
+    struct fan_dev *dev = NULL;
 
-struct fan_dev \*dev = NULL;
+    __ASSERT(dev != NULL, "Fan device not initialized!");
 
-\_\_ASSERT(dev != NULL, \"Fan device not initialized!\");
-
-fan_update_speed(dev); // 将触发断言
-
+    fan_update_speed(dev); /* 将触发断言 */
 }
 ```
 
 输出：
 
 ```
-ASSERTION FAIL \[dev != NULL\] @ fan.c:42
-
+ASSERTION FAIL [dev != NULL] @ fan.c:42
 Fan device not initialized!
-
 Fatal error in thread fan_task (reason 4)
 ```
 
 开发者可根据打印内容定位函数、行号与触发线程。
-

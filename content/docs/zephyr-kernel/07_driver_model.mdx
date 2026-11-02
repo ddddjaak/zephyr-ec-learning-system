@@ -1003,7 +1003,9 @@ DT_INST_FOREACH_STATUS_OKAY(CUSTOM_LED_DEFINE)
 ```c
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
+#include <zephyr/drivers/led.h>
 
+/* 应用层使用 LED 子系统 API，而不是直接访问驱动内部的 api 结构体 */
 const struct device *led = DEVICE_DT_GET(DT_NODELABEL(custom_led0));
 
 int main(void)
@@ -1016,7 +1018,7 @@ int main(void)
     printk("Custom LED driver example\n");
 
     while (1) {
-        led_api->toggle(led);
+        led_toggle(led, 0);
         k_msleep(500);
     }
 
@@ -1735,9 +1737,9 @@ int my_driver_function(const struct device *dev)
 ```
 
 :::warning[printk 的限制]
-- `printk()` 是阻塞的，会影响实时性
-- 不能在 ISR 中使用（会导致系统崩溃）
+- `printk()` 是同步阻塞输出，会影响实时性（ISR 中虽可调用，但会拉长中断关闭时间，应避免）
 - 输出量大时会占用大量 CPU 时间
+- 量产固件建议用 `LOG_*` 异步日志替代
 :::
 
 ### 使用日志系统

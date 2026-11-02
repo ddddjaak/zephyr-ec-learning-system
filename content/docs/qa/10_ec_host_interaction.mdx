@@ -86,11 +86,11 @@ title: EC-Host 交互调试
 **Triage Checklist**：
 
 1. **定位** — 确认 SCI 链路：
-   - EC 侧：检查 SCI_EVT (0x06) 寄存器是否写入
+   - EC 侧：检查 EC 状态寄存器的 SCI_EVT 位（bit5，掩码 0x20）是否置位
    - 中断线：检查 SCI# (通常 GPIO) 是否拉低
    - Host 侧：检查是否进入 SCI handler
 2. 用示波器测量 SCI# 引脚 — 确认脉冲宽度足够被 PCH 识别
-3. 检查 ACPI `_Lxx` / `_Exx` 方法是否正确对应 Query Number
+3. 检查 ACPI `_Qxx` 方法是否正确对应 EC Query Number（`_Lxx`/`_Exx` 是 GPE 事件方法，不是 EC Query）
 4. **常见根因**：SCI# 引脚配置为 level-triggered 但代码用了 edge-triggered
 
 **Q：SMI 处理时间过长导致实时性降低**

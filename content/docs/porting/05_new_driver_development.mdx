@@ -76,15 +76,13 @@ title: 新驱动开发流程（New Driver Development）
        .read = adc_csce250x_read,
    };
 
-   DEVICE_DT_INST_DEFINE(
-       adc_csce250x_init,
-       NULL,
-       NULL,
-       NULL,
-       NULL,
-       POST_KERNEL,
-       CONFIG_ADC_INIT_PRIORITY,
-       &adc_csce250x_api);
+   /* 每个状态为 okay 的实例展开一次；第一参数是实例号 inst，init 函数是第二参数 */
+   #define ADC_CSCE250X_INIT(inst)                                        \
+       DEVICE_DT_INST_DEFINE(inst, adc_csce250x_init, NULL, NULL, NULL,   \
+                             POST_KERNEL, CONFIG_ADC_INIT_PRIORITY,       \
+                             &adc_csce250x_api);
+
+   DT_INST_FOREACH_STATUS_OKAY(ADC_CSCE250X_INIT)
    ```
 
    验证：`west build` 编译通过，无链接错误。

@@ -83,7 +83,7 @@ title: 构建与配置调试
 
 1. 确认 DT 节点中的 `compatible` 字符串与驱动源码中的 `DT_DRV_COMPAT` 宏一致
 2. 检查 `DEVICE_DT_INST_DEFINE` 是否正确使用匹配的 DT 实例号
-3. 用 `west build -t devicetree` 或 `west build -t compiled_dts` 查看完整 DT
+3. 查看完整 DT：直接看 `build/zephyr/zephyr.dts`（叠加后的最终设备树）
 
 ## 调试工具速查
 
@@ -91,6 +91,5 @@ title: 构建与配置调试
 |------|------|----------|
 | `west build -t menuconfig` | Kconfig 可视化 | 交互式修改配置 |
 | `west build -t guiconfig` | Kconfig GUI | 图形界面查看配置 |
-| `west build -t devicetree` | 查看合并后 DT | 只打印 devicetree 到 stdout |
-| `build/zephyr/zephyr.dts` | 最终 DTS 文件 | 文本文件，可搜索 |
+| `build/zephyr/zephyr.dts` | 查看合并后 DT | 叠加后的最终设备树，文本文件可搜索 |
 | `build/zephyr/.config` | 最终 Kconfig | 文本文件，确认选项实际值 |

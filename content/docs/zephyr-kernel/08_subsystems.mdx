@@ -59,8 +59,8 @@ CONFIG_LOG_BACKEND_UART=y
 # 配置日志缓冲区大小（字节）
 CONFIG_LOG_BUFFER_SIZE=2048
 
-# 启用日志时间戳
-CONFIG_LOG_TIMESTAMP=y
+# 日志时间戳（默认输出；可选 64 位时间戳）
+# CONFIG_LOG_TIMESTAMP_64BIT=y
 
 # 启用日志颜色（需要终端支持）
 CONFIG_LOG_BACKEND_SHOW_COLOR=y
@@ -118,7 +118,7 @@ void my_function(void)
 
 格式说明：
 - `[00:00:01.234,567]`：时间戳（小时:分钟:秒.毫秒,微秒）
-- `&lt;inf&gt;`：日志级别
+- `<inf>`：日志级别
 - `my_module`：模块名
 - `Info message: 42`：日志内容
 
@@ -841,8 +841,9 @@ CONFIG_PM_DEVICE_RUNTIME=y
 # 配置空闲时自动进入低功耗模式
 CONFIG_PM_POLICY_DEFAULT=y
 
-# 启用电源管理调试
-CONFIG_PM_DEBUG=y
+# 调试电源管理状态切换（配合 log 模块观察 PM 事件）
+# CONFIG_PM_STATS=y
+CONFIG_LOG_DEFAULT_LEVEL=3
 ```
 
 ### 使用电源管理

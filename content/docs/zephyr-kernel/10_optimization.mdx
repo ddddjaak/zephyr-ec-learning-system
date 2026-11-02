@@ -133,18 +133,18 @@ printk("Stack unused: %zu bytes\n", unused);
 K_THREAD_STACK_DEFINE(my_thread_stack, MY_THREAD_STACK_SIZE);
 ```
 
-**使用内存池代替动态分配**：
+**使用 k_heap 静态堆代替 k_malloc**（Zephyr 3.7 已移除 k_mem_pool API）：
 
 ```c
-// 避免使用 k_malloc/k_free
+// 避免使用全局堆 k_malloc/k_free
 // char *buf = k_malloc(256);
 
-// 使用内存池
-K_MEM_POOL_DEFINE(my_pool, 64, 256, 4, 4);
+// 使用自定义 k_heap：大小编译期确定，无全局堆碎片化风险
+K_HEAP_DEFINE(my_heap, 1024);
 
-void *buf = k_mem_pool_malloc(&my_pool, 256);
+void *buf = k_heap_alloc(&my_heap, 256, K_NO_WAIT);
 // 使用完毕后释放
-k_mem_pool_free(&my_pool, &buf);
+k_heap_free(&my_heap, buf);
 ```
 
 **静态分配优先**：
@@ -222,22 +222,23 @@ CONFIG_SCHED_THREAD_USAGE=y
 #include <zephyr/kernel.h>
 #include <zephyr/sys/printk.h>
 
+static void usage_cb(struct k_thread *thread, void *user_data)
+{
+    k_thread_runtime_stats_t stats;
+    k_thread_runtime_stats_get(thread, &stats);
+    uint32_t usage = (stats.execution_cycles * 100) /
+                     k_cycle_get_32();
+    printk("%-20s %3u%%\n",
+           k_thread_name_get(thread), usage);
+}
+
 void print_thread_stats(void)
 {
-    struct k_thread *thread;
-    k_thread_runtime_stats_t stats;
-    
     printk("Thread Name          CPU Usage\n");
     printk("--------------------------------\n");
-    
+
     // 遍历所有线程
-    K_THREAD_FOREACH(thread) {
-        k_thread_runtime_stats_get(thread, &stats);
-        uint32_t usage = (stats.execution_cycles * 100) / 
-                         k_cycle_get_32();
-        printk("%-20s %3u%%\n", 
-               k_thread_name_get(thread), usage);
-    }
+    k_thread_foreach(usage_cb, NULL);
 }
 ```
 
@@ -716,13 +717,13 @@ k_mutex_unlock(&critical_mutex);
 #include <zephyr/kernel.h>
 #include <zephyr/drivers/gpio.h>
 
-#define TEST_PIN DT_GPIO_PIN(DT_ALIAS(led0), gpios)
-#define TEST_PORT DT_GPIO_LABEL(DT_ALIAS(led0), gpios)
+static const struct gpio_dt_spec test_gpio =
+    GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
 
 static uint32_t irq_timestamps[1000];
 static uint32_t irq_count = 0;
 
-void test_gpio_isr(const struct device *dev, 
+void test_gpio_isr(const struct device *dev,
                    struct gpio_callback *cb, uint32_t pins)
 {
     if (irq_count < 1000) {
@@ -732,21 +733,24 @@ void test_gpio_isr(const struct device *dev,
 
 void measure_interrupt_latency(void)
 {
-    const struct device *gpio = device_get_binding(TEST_PORT);
     uint32_t trigger_time;
-    
+
+    if (!device_is_ready(test_gpio.port)) {
+        return;
+    }
+
     // 配置 GPIO 中断
-    gpio_pin_configure(gpio, TEST_PIN, GPIO_INPUT);
-    gpio_pin_interrupt_configure(gpio, TEST_PIN, 
-                                 GPIO_INT_EDGE_RISING);
+    gpio_pin_configure_dt(&test_gpio, GPIO_INPUT);
+    gpio_pin_interrupt_configure_dt(&test_gpio,
+                                    GPIO_INT_EDGE_RISING);
     
     // 触发中断并测量延迟
     for (int i = 0; i < 1000; i++) {
         trigger_time = k_cycle_get_32();
         // 触发中断
-        gpio_pin_set(gpio, TEST_PIN, 1);
+        gpio_pin_set_dt(&test_gpio, 1);
         k_busy_wait(10);
-        gpio_pin_set(gpio, TEST_PIN, 0);
+        gpio_pin_set_dt(&test_gpio, 0);
         k_sleep(K_MSEC(1));
     }
     
@@ -879,10 +883,10 @@ graph LR
 # prj.conf
 CONFIG_PM=y
 CONFIG_PM_DEVICE=y
-CONFIG_PM_POLICY_DEFAULT=y
 
-# 配置空闲时自动进入低功耗模式
-CONFIG_PM_POLICY_APP=y
+# 电源策略 choice：默认策略或自定义策略（二选一）
+# CONFIG_PM_POLICY_DEFAULT=y   # 使用默认策略
+CONFIG_PM_POLICY_CUSTOM=y      # 自定义策略（配合下方 pm_policy_next_state() 覆盖）
 ```
 
 **使用睡眠模式**：
@@ -927,12 +931,13 @@ const struct pm_state_info *pm_policy_next_state(uint8_t cpu, int32_t ticks)
 ```c
 #include <zephyr/pm/device.h>
 
+/* nodelabel 名以板级 DTS 为准（此处以常见板卡的 uart0/spi1/i2c0 为例） */
 void power_down_peripherals(void)
 {
-    const struct device *uart = device_get_binding("UART_0");
-    const struct device *spi = device_get_binding("SPI_1");
-    const struct device *i2c = device_get_binding("I2C_0");
-    
+    const struct device *uart = DEVICE_DT_GET(DT_NODELABEL(uart0));
+    const struct device *spi  = DEVICE_DT_GET(DT_NODELABEL(spi1));
+    const struct device *i2c  = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+
     // 关闭外设
     pm_device_action_run(uart, PM_DEVICE_ACTION_SUSPEND);
     pm_device_action_run(spi, PM_DEVICE_ACTION_SUSPEND);
@@ -941,10 +946,10 @@ void power_down_peripherals(void)
 
 void power_up_peripherals(void)
 {
-    const struct device *uart = device_get_binding("UART_0");
-    const struct device *spi = device_get_binding("SPI_1");
-    const struct device *i2c = device_get_binding("I2C_0");
-    
+    const struct device *uart = DEVICE_DT_GET(DT_NODELABEL(uart0));
+    const struct device *spi  = DEVICE_DT_GET(DT_NODELABEL(spi1));
+    const struct device *i2c  = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+
     // 唤醒外设
     pm_device_action_run(uart, PM_DEVICE_ACTION_RESUME);
     pm_device_action_run(spi, PM_DEVICE_ACTION_RESUME);
@@ -957,15 +962,15 @@ void power_up_peripherals(void)
 ```c
 void read_sensor_low_power(void)
 {
-    const struct device *i2c = device_get_binding("I2C_0");
-    
+    const struct device *i2c = DEVICE_DT_GET(DT_NODELABEL(i2c0));
+
     // 唤醒 I2C
     pm_device_action_run(i2c, PM_DEVICE_ACTION_RESUME);
-    
+
     // 读取传感器
     uint8_t data[2];
     i2c_read(i2c, data, 2, SENSOR_ADDR);
-    
+
     // 关闭 I2C
     pm_device_action_run(i2c, PM_DEVICE_ACTION_SUSPEND);
 }
@@ -1016,8 +1021,8 @@ void adaptive_frequency_scaling(void)
 // 主循环：持续运行
 void main(void)
 {
-    const struct device *sensor = device_get_binding("SENSOR");
-    
+    const struct device *sensor = DEVICE_DT_GET(DT_NODELABEL(sensor_dev));
+
     while (1) {
         // 每 100ms 读取一次传感器
         read_sensor(sensor);
@@ -1043,8 +1048,8 @@ CONFIG_TICKLESS_KERNEL=y
 ```c
 void main(void)
 {
-    const struct device *sensor = device_get_binding("SENSOR");
-    
+    const struct device *sensor = DEVICE_DT_GET(DT_NODELABEL(sensor_dev));
+
     // 关闭不需要的外设
     power_down_unused_peripherals();
     
@@ -1087,28 +1092,30 @@ void main(void)
 ```c
 #include <zephyr/kernel.h>
 
+static void kernel_stats_cb(struct k_thread *thread, void *user_data)
+{
+    printk("Thread: %s\n", k_thread_name_get(thread));
+    printk("  State: %d\n", thread->base.thread_state);
+    printk("  Priority: %d\n", thread->base.prio);
+
+#ifdef CONFIG_THREAD_STACK_INFO
+    size_t unused;
+    if (k_thread_stack_space_get(thread, &unused) == 0) {
+        printk("  Stack: %zu / %zu bytes used\n",
+               thread->stack_info.size - unused,
+               thread->stack_info.size);
+    }
+#endif
+}
+
 void print_kernel_stats(void)
 {
-    struct k_thread *thread;
-    
     printk("\n=== Kernel Statistics ===\n");
     printk("System uptime: %lld ms\n", k_uptime_get());
     printk("Cycle count: %u\n", k_cycle_get_32());
-    
+
     printk("\n=== Thread Information ===\n");
-    K_THREAD_FOREACH(thread) {
-        printk("Thread: %s\n", k_thread_name_get(thread));
-        printk("  State: %d\n", thread->base.thread_state);
-        printk("  Priority: %d\n", thread->base.prio);
-        
-        #ifdef CONFIG_THREAD_STACK_INFO
-        size_t unused;
-        k_thread_stack_space_get(thread, &unused);
-        printk("  Stack: %zu / %zu bytes used\n", 
-               thread->stack_info.size - unused, 
-               thread->stack_info.size);
-        #endif
-    }
+    k_thread_foreach(kernel_stats_cb, NULL);
 }
 ```
 
@@ -1272,26 +1279,29 @@ void init_heap_monitoring(void)
 **Stack Usage**：
 
 ```c
+static void stack_usage_cb(struct k_thread *thread, void *user_data)
+{
+    size_t unused;
+    if (k_thread_stack_space_get(thread, &unused) != 0) {
+        return;  /* 线程尚未运行过，无法测量 */
+    }
+
+    size_t used = thread->stack_info.size - unused;
+    float usage_percent = (float)used / thread->stack_info.size * 100;
+
+    printk("%s: %zu / %zu bytes (%.1f%%)\n",
+           k_thread_name_get(thread),
+           used, thread->stack_info.size, usage_percent);
+
+    if (usage_percent > 80) {
+        printk("  WARNING: High stack usage!\n");
+    }
+}
+
 void check_stack_usage(void)
 {
-    struct k_thread *thread;
-    
     printk("\n=== Stack Usage ===\n");
-    K_THREAD_FOREACH(thread) {
-        size_t unused;
-        k_thread_stack_space_get(thread, &unused);
-        
-        size_t used = thread->stack_info.size - unused;
-        float usage_percent = (float)used / thread->stack_info.size * 100;
-        
-        printk("%s: %zu / %zu bytes (%.1f%%)\n",
-               k_thread_name_get(thread),
-               used, thread->stack_info.size, usage_percent);
-        
-        if (usage_percent > 80) {
-            printk("  WARNING: High stack usage!\n");
-        }
-    }
+    k_thread_foreach(stack_usage_cb, NULL);
 }
 ```
 
@@ -1307,19 +1317,20 @@ void check_stack_usage(void)
 **初始实现**：
 
 ```c
+/* nodelabel 以板级 DTS 为准 */
 void main(void)
 {
-    const struct device *sensor = device_get_binding("SHT3X");
-    const struct device *lora = device_get_binding("LORA");
-    
+    const struct device *sensor = DEVICE_DT_GET(DT_NODELABEL(sht3x));
+    const struct device *lora = DEVICE_DT_GET(DT_NODELABEL(lora0));
+
     while (1) {
         // 读取传感器
         float temp, humidity;
         read_sensor(sensor, &temp, &humidity);
-        
+
         // 发送数据
         send_lora(lora, temp, humidity);
-        
+
         // 等待 10 分钟
         k_sleep(K_MINUTES(10));
     }
@@ -1345,9 +1356,9 @@ void main(void)
 {
     // 关闭 UART、LED 等
     power_down_unused_peripherals();
-    
-    const struct device *sensor = device_get_binding("SHT3X");
-    const struct device *lora = device_get_binding("LORA");
+
+    const struct device *sensor = DEVICE_DT_GET(DT_NODELABEL(sht3x));
+    const struct device *lora = DEVICE_DT_GET(DT_NODELABEL(lora0));
     
     while (1) {
         // 唤醒传感器

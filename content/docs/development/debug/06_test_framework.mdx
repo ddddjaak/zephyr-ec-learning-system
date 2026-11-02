@@ -76,7 +76,7 @@ Twister 是 Zephyr 的高级测试运行器，支持批量执行、过滤和生�
 ./zephyr/scripts/twister -p native_sim -T zephyr/tests/kernel
 
 ## 生成 JSON 报告
-./zephyr/scripts/twister -T zephyr/tests/ --json-report
+./zephyr/scripts/twister -T zephyr/tests/  # twister.json / twister.xml 自动生成于 outdir
 
 ## 仅构建不运行
 ./zephyr/scripts/twister -T zephyr/tests/ --build-only

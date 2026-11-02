@@ -46,7 +46,7 @@ cd EC-Zephyr/ecfw-zephyr
 west update
 ```
 
-此命令根据 `west.yml` 清单文件拉取所有依赖——包括 Zephyr 内核、HAL 层、MCUboot 等。首次执行需联网下载，后续仅在清单变更时需要重新运行。
+此命令根据 `west.yml` 清单文件同步所有依赖——包括 Zephyr 内核、HAL 层、MCUboot 等。使用离线 SDK 包时，模块已在本地 `ecfwwork/` 目录中，`west update` 只做本地同步，**不访问网络**；若你是从远端仓库重新初始化的工作区（`west init` 指向远程 manifest），首次执行才需要联网拉取。后续仅在清单变更时需要重新运行。
 
 > `west update` 仅需在首次搭建或 `west.yml` 变更后执行。日常开发直接使用 `west build` 即可。
 
@@ -60,7 +60,7 @@ west update
 
 ```bash
 # 完整构建（pristine build，从头编译）
-west build -b csce250x_evb app/ -p
+west build -b csce250x_evb app/ -p --build-dir build/ec_fw
 ```
 
 **Board Target 选择：**
@@ -94,13 +94,13 @@ west build -b csce250x_evb app/ -p
 
 ```bash
 # 增量构建（跳过已编译对象）
-west build -b csce250x_evb app/
+west build -b csce250x_evb app/ --build-dir build/ec_fw
 
 # 带额外 Kconfig 覆盖
-west build -b csce250x_evb app/ -- -DCONFIG_LOG=y
+west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DCONFIG_LOG=y
 
 # 使用 release 配置覆盖文件
-west build -b csce250x_evb app/ -- -DOVERLAY_CONFIG=release.conf
+west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DOVERLAY_CONFIG=release.conf
 
 # 查看 RAM 占用
 west build -t ram_report
@@ -119,7 +119,7 @@ west build -t rom_report
 |------|------|---------|
 | `west: command not found` | pip 路径不在 `$PATH` | `pip install west` 后重启终端 |
 | CMake 找不到 Zephyr | 未导出 CMake 包 | 执行 `west zephyr-export` |
-| `arm-none-eabi-gcc: not found` | 未安装 ARM Toolchain | 安装 Zephyr SDK 0.16.8 或 ARM GNU Toolchain |
+| `arm-zephyr-eabi-gcc: not found` | Zephyr SDK 未安装或路径未配置 | 安装 Zephyr SDK 0.16.8 并确认 `ZEPHYR_SDK_INSTALL_DIR` 指向其安装目录 |
 | 编译报 python 依赖缺失 | 未安装 requirements | `pip install -r ecfwwork/zephyr_fork/scripts/requirements.txt` |
 | `__ZEPHYR_SUPERVISED__` 错误 | 环境变量冲突 | `unset ZEPHYR_TOOLCHAIN_VARIANT` |
 

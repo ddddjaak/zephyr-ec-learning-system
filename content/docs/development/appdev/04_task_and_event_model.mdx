@@ -14,11 +14,11 @@ K_THREAD_DEFINE(
     thread_id,          /* 线程标识符 */
     stack_size,         /* 栈大小 */
     thread_function,    /* 线程入口函数 */
-    period_ptr,         /* 线程周期参数指针（可选） */
-    NULL, NULL,         /* 保留参数 */
+    period_ptr,         /* 线程周期参数指针（可选，经 p1 传入） */
+    NULL, NULL,         /* p2、p3 保留参数 */
     priority,           /* 线程优先级 */
     K_INHERIT_PERMS,    /* 权限继承标志 */
-    EC_WAIT_FOREVER     /* 延迟启动时间 */
+    K_FOREVER           /* 延迟启动时间：挂起等待 start_all_tasks() 统一启动 */
 );
 ```
 
@@ -45,8 +45,22 @@ void battery_thread(void *p1, void *p2, void *p3)
     }
 }
 
+```c
+static const uint32_t battery_period = 100; /* ms */
+
+void battery_thread(void *p1, void *p2, void *p3)
+{
+    const uint32_t *period = p1;
+    while (true) {
+        battery_status_check();
+        battery_data_report();
+        k_msleep(*period);
+    }
+}
+
+/* delay 参数为 K_FOREVER：线程创建后挂起，由 start_all_tasks() 统一 k_thread_start() */
 K_THREAD_DEFINE(battery_tid, 2048, battery_thread,
-                (void *)&battery_period, NULL, NULL, 5, 0, 0);
+                (void *)&battery_period, NULL, NULL, 5, 0, K_FOREVER);
 ```
 
 事件驱动任务入口函数模式：

@@ -54,7 +54,7 @@ static int my_sensor_pm_action(const struct device *dev,
     static struct my_sensor_data my_sensor_data_##inst;               \
     static const struct my_sensor_config my_sensor_config_##inst = {  \
         .i2c_addr = DT_INST_REG_ADDR(inst),                           \
-        .int_gpio = DT_INST_GPIOS_CELL(inst, int_gpios, gpio_pin),   \
+        .int_gpio = GPIO_DT_SPEC_INST_GET(inst, int_gpios),           \
     };                                                                \
     PM_DEVICE_DT_INST_DEFINE(inst, my_sensor_pm_action);              \
     DEVICE_DT_INST_DEFINE(inst, my_sensor_init,                       \

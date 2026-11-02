@@ -35,7 +35,7 @@ EC 键盘以标准 USB HID Boot Protocol 格式上报按键：
 
 通过 Zephyr USB 设备栈配置，关键 Kconfig 选项：
 - `CONFIG_USB_DEVICE_STACK`：USB 设备模式总开关
-- `CONFIG_USB_HID_DEVICE`：HID 设备类驱动
+- `CONFIG_USB_DEVICE_HID`：HID 设备类驱动
 - `CONFIG_USB_DFU_CLASS`：DFU 固件更新类
 
 
@@ -156,8 +156,8 @@ uart:~$ pd <port> dump       # 寄存器转储
 ### 详细参考资料
 
 - [USB PD 规范（USB-IF）](https://www.usb.org/document-library/usb-power-delivery) — 官方 PD 3.1 规范文档
-- [Zephyr USB-C PD Stack](https://docs.zephyrproject.org/latest/connectivity/usb/overview.html) — Zephyr 原生 USB-C PD 子系统文档
-- [TCPC 驱动模型](/docs/development/modules/07_usb_and_pd) — 芯海 EC TCPC 驱动开发指南
+- [Zephyr USB 设备栈文档](https://docs.zephyrproject.org/latest/services/connectivity/usb/device_next/usb_device.html) — USB 设备栈（本页 HID/DFU 所基于的框架）
+- Zephyr 3.7 无内置完整 USB-C PD 协议栈，PD 策略层由本方案自行实现；TCPC 控制器接口以芯片手册为准
 
 ## 固件写保护机制
 

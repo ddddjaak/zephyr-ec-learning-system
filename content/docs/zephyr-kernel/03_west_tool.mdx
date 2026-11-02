@@ -64,7 +64,7 @@ west init [-m MANIFEST_URL] [-mr MANIFEST_REVISION] [--mf MANIFEST_FILE] [PATH]
 west init ~/zephyrproject
 
 # 指定 Manifest 仓库和分支
-west init -m https://github.com/zephyrproject-rtos/zephyr --mr v3.5.0 ~/zephyr-v3.5
+west init -m https://github.com/zephyrproject-rtos/zephyr --mr v3.7.0 ~/zephyr-v3.7
 
 # 使用本地 Manifest 文件
 west init --mf my-manifest.yml ~/my-project
@@ -329,17 +329,14 @@ west debug
 
 ### 其他常用命令
 
-#### west attach - 连接串口
+#### west attach - 附加调试器（不重新烧录）
 
 ```bash
-# 连接到目标板的串口
+# 附加到目标板进行 GDB 调试（不重新烧录固件，保留现场）
 west attach
 
-# 指定串口设备
-west attach -p /dev/ttyUSB0
-
-# 指定波特率
-west attach -b 115200
+# 等价于 west build 后直接进入 gdb；与 west debug 的区别是
+# attach 不执行 flash 步骤，适合调试"正在运行中的现场"
 ```
 
 #### west boards - 列出支持的板子
@@ -456,7 +453,7 @@ manifest:
   projects:
     # Zephyr 核心
     - name: zephyr
-      revision: v3.5.0
+      revision: v3.7.0
       path: zephyr
       import: true
     

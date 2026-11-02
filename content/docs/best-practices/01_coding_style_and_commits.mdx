@@ -5,12 +5,11 @@ title: 代码规范与提交流程（Coding Style / Commit / Doc）
 
 ## 代码风格与结构规范
 
-Zephyr 作为一个跨平台实时操作系统，其代码风格遵循 Linux Kernel
-Style。建议 EC 开发团队严格遵循统一规范，以确保可读性与协作性。
+Zephyr 的代码风格基于 Linux Kernel Coding Style（详见 Zephyr 官方 [Coding Style 指南](https://docs.zephyrproject.org/latest/contribute/coding_guidelines/index.html)）。建议 EC 开发团队严格遵循统一规范，以确保可读性与协作性。
 
 关键原则：
 
-- 缩进：统一使用 4 个空格，不允许使用 Tab。
+- 缩进：统一使用 **Tab，宽度为 8**（与 Zephyr 上游及 `clang-format` 配置一致，不要用空格缩进）。
 
 - 命名规则：
 
@@ -36,7 +35,7 @@ int fan_control_set_speed(uint8_t level)
 
 {
 
-if (level > FAN_MAX_LEVEL) {
+if (level *> FAN_MAX_LEVEL) {
 
 LOG_ERR("Invalid fan level: %d", level);
 
@@ -57,11 +56,11 @@ return 0;
 项目）时，提交规范至关重要。建议遵循如下格式：
 
 ```
-\<type>(\<module>): \<subject>
+\<type*>(\<module*>): \<subject*>
 
-\<body>
+\<body*>
 
-\<footer>
+\<footer*>
 ```
 
 示例：

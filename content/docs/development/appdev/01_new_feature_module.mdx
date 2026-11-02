@@ -2,10 +2,9 @@
 title: 快速上手：新增一个功能模块
 ---
 
-
 以"电池电量计（Fuel Gauge）"模块为例，演示从零到一在 EC 固件中新增一个自定义功能模块的完整流程。这个模式适用于任何新增的 EC 应用模块。
 
-第1步：创建模块目录
+## 第1步：创建模块目录
 
 在 `app/` 下新建子目录：
 
@@ -13,7 +12,7 @@ title: 快速上手：新增一个功能模块
 app/fuel_gauge/
 ```
 
-第2步：编写模块代码
+## 第2步：编写模块代码
 
 `app/fuel_gauge/fuel_gauge.h` —— 对外接口：
 
@@ -29,7 +28,7 @@ int fuel_gauge_get_voltage_mv(void);
 
 `app/fuel_gauge/fuel_gauge.c` —— 实现文件，通过 ADC 读取电池电压并结合放电曲线计算电量百分比，内部使用 `adc_read()` 和线程定时采样。
 
-第3步：添加 Kconfig 选项
+## 第3步：添加 Kconfig 选项
 
 在 `app/fuel_gauge/Kconfig` 中定义：
 
@@ -42,7 +41,15 @@ config FUEL_GAUGE
       Enable battery fuel gauge monitoring module.
 ```
 
-第4步：注册到 CMakeLists.txt
+## 第4步：把模块 Kconfig 挂载进配置树
+
+模块级 `Kconfig` 不会自动被扫描——必须在 `app/Kconfig` 中引入它，否则 `CONFIG_FUEL_GAUGE` 根本不会出现在配置系统里：
+
+```kconfig
+rsource "fuel_gauge/Kconfig"
+```
+
+## 第5步：注册到 CMakeLists.txt
 
 在 `app/CMakeLists.txt` 中添加：
 
@@ -52,7 +59,7 @@ zephyr_library_sources_ifdef(CONFIG_FUEL_GAUGE
 )
 ```
 
-第5步：在 prj.conf 中启用
+## 第6步：在 prj.conf 中启用
 
 ```
 CONFIG_FUEL_GAUGE=y
@@ -60,5 +67,4 @@ CONFIG_FUEL_GAUGE=y
 
 重新运行 `west build` 即可将模块编译进固件。
 
-关键要点：遵循上述四件套模式（Kconfig + CMakeLists + 头文件 + 源文件），确保新增模块与系统构建体系无缝集成。
-
+关键要点：遵循上述五件套模式（Kconfig + Kconfig 挂载 + CMakeLists + 头文件 + 源文件），确保新增模块与系统构建体系无缝集成。

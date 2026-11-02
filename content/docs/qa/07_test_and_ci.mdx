@@ -28,7 +28,7 @@ title: 测试与 CI 调试
 3. 检查内存模型差异（native_sim 内存充足，真机可能栈/堆不足）
 4. 增加 QEMU 仿真测试覆盖：
    ```bash
-   west build -b mps2_an385 -t run -- -DCONFIG_QEMU=y
+   west build -b mps2_an385 -t run   # QEMU 目标无需额外 Kconfig
    ```
 
 ## 测试编写
@@ -44,7 +44,7 @@ title: 测试与 CI 调试
    DEFINE_FFF_GLOBALS;
    FAKE_VALUE_FUNC(int, k_sem_take, struct k_sem *, k_timeout_t);
    ```
-2. **Zephyr Test Mock**：使用 `CONFIG_ZTEST_PARAMETRIX=y` 和 FFF 组合
+2. **Zephyr Test Mock**：参数化测试用 `CONFIG_ZTEST_MOCKING=y`（配合 `ZTEST_PARAMETER_COUNT`）与 FFF 组合
 
 **Q：** 测试覆盖率不足
 
@@ -58,7 +58,7 @@ title: 测试与 CI 调试
    west build -t coverage
    ```
 2. 重点补充**边界条件**和**异常路径**的测试
-3. 考虑增加 Fuzz Test（用 `CONFIG_ZTEST_FUZZ=y`）
+3. 考虑增加 Fuzz Test（配合 Twister 的 fuzzing 集成与 `CONFIG_ASAN=y` 在 native_sim 上捕获内存错误）
 
 ## CI 环境
 

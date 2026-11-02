@@ -65,8 +65,8 @@ EC 中最常见的任务模式是周期性轮询（如键盘扫描、电池状�
 ```c
 /* 推荐模式：使用 k_timer + 回调 */
 void kbd_scan_timer_handler(struct k_timer *timer) {
-    // timer 回调在 system workqueue 中执行
-    // 不能做耗时操作
+    // 注意：k_timer 的 expiry 回调运行在系统时钟中断（ISR）上下文，
+    // 只能做非阻塞操作（入队/置标志），耗时处理放到 work/线程中
     k_msgq_put(&kbd_queue, &SCAN_EVENT, K_NO_WAIT);
 }
 

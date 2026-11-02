@@ -9,7 +9,7 @@ title: 安全加固与运行时防护（Security Hardening）
 
 启用 Bootloader 校验机制：
 
-该部分可通过配置打包工具设置安全启动，目录为ecfw-zephyr\\tools\\EC250XPacker。如何配置请参考4.9安全启动与验证。
+该部分可通过配置打包工具设置安全启动，目录为 `ecfw-zephyr\tools\EC250XPacker`。配置方法详见下文[调试与生产阶段隔离](#调试与生产阶段隔离)与[安全与固件更新模块](/docs/development/modules/08_security_and_firmware_update)。
 
 ## 运行时保护（Runtime Security）
 
@@ -41,5 +41,5 @@ CONFIG_SHELL=n
 CONFIG_ASSERT=n
 ```
 
-该部分在编译时加上ecfw-zephyr\\release.conf
+该部分在编译时加上 `ecfw-zephyr\release.conf`（通过 `EXTRA_CONF_FILE=release.conf` 或 `-DCONFIG_XXX` 方式合并进最终配置）。
 

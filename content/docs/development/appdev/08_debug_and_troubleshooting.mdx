@@ -35,9 +35,13 @@ CONFIG_LOG_DEFAULT_LEVEL=3       # 0=NONE, 1=ERR, 2=WRN, 3=INF, 4=DBG
 CONFIG_STACK_SENTINEL=y          # 栈哨兵检测溢出
 CONFIG_STACK_CANARIES=y          # 栈金丝雀保护
 CONFIG_THREAD_STACK_INFO=y       # 保留线程栈信息供运行时查询
+CONFIG_THREAD_MONITOR=y          # kernel stacks 命令依赖
+CONFIG_INIT_STACKS=y             # 统计栈使用率需要
+CONFIG_SYS_HEAP_RUNTIME_STATS=y  # kernel heap 命令依赖
 CONFIG_PRINTK=y
-CONFIG_FATAL_ERROR_HANDLER=y
 ```
+
+崩溃处理策略：Zephyr 没有独立的 `CONFIG_FATAL_ERROR_HANDLER` 开关——定制致命错误行为的方式是在应用中覆盖 `k_sys_fatal_error_handler()`，完整流程见[异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis)。
 
 运行时通过 Shell 命令查看栈使用：
 

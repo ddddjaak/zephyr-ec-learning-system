@@ -95,7 +95,7 @@ west build -t run
 **预期输出**:
 
 ```
-*** Booting Zephyr OS build v3.5.0 ***
+*** Booting Zephyr OS build v3.7.0 ***
 Hello World! qemu_x86
 ```
 
@@ -123,64 +123,77 @@ screen /dev/ttyACM0 115200
 
 ### 串口输出查看
 
-=== "Linux/macOS"
+<Tabs items={['Linux/macOS', 'Windows', 'macOS']}>
 
-    **使用 screen**:
-    ```bash
-    # 查找串口设备
-    ls /dev/tty*
-    
-    # 连接串口（波特率 115200）
-    screen /dev/ttyACM0 115200
-    
-    # 退出 screen: Ctrl+A 然后按 K，确认退出
-    ```
-    
-    **使用 minicom**:
-    ```bash
-    # 安装 minicom
-    sudo apt install minicom  # Ubuntu/Debian
-    
-    # 配置并连接
-    minicom -D /dev/ttyACM0 -b 115200
-    
-    # 退出 minicom: Ctrl+A 然后按 X
-    ```
+<Tab value="Linux/macOS">
 
-=== "Windows"
+**使用 screen**:
 
-    **使用 PuTTY**:
-    
-    1. 下载并安装 [PuTTY](https://www.putty.org/)
-    2. 打开设备管理器，查看 COM 口号（如 COM3）
-    3. 打开 PuTTY，选择 Serial 连接类型
-    4. 输入 COM 口号和波特率 115200
-    5. 点击 Open 连接
-    
-    **使用 Tera Term**:
-    
-    1. 下载并安装 [Tera Term](https://ttssh2.osdn.jp/)
-    2. 打开 Tera Term，选择 Serial 连接
-    3. 选择 COM 口和波特率 115200
-    4. 点击 OK 连接
+```bash
+# 查找串口设备
+ls /dev/tty*
 
-=== "macOS"
+# 连接串口（波特率 115200）
+screen /dev/ttyACM0 115200
 
-    **使用 screen**:
-    ```bash
-    # 查找串口设备
-    ls /dev/cu.*
-    
-    # 连接串口
-    screen /dev/cu.usbmodem* 115200
-    
-    # 退出 screen: Ctrl+A 然后按 K
-    ```
+# 退出 screen: Ctrl+A 然后按 K，确认退出
+```
+
+**使用 minicom**:
+
+```bash
+# 安装 minicom
+sudo apt install minicom  # Ubuntu/Debian
+
+# 配置并连接
+minicom -D /dev/ttyACM0 -b 115200
+
+# 退出 minicom: Ctrl+A 然后按 X
+```
+
+</Tab>
+
+<Tab value="Windows">
+
+**使用 PuTTY**:
+
+1. 下载并安装 [PuTTY](https://www.putty.org/)
+2. 打开设备管理器，查看 COM 口号（如 COM3）
+3. 打开 PuTTY，选择 Serial 连接类型
+4. 输入 COM 口号和波特率 115200
+5. 点击 Open 连接
+
+**使用 Tera Term**:
+
+1. 下载并安装 [Tera Term](https://ttssh2.osdn.jp/)
+2. 打开 Tera Term，选择 Serial 连接
+3. 选择 COM 口和波特率 115200
+4. 点击 OK 连接
+
+</Tab>
+
+<Tab value="macOS">
+
+**使用 screen**:
+
+```bash
+# 查找串口设备
+ls /dev/cu.*
+
+# 连接串口
+screen /dev/cu.usbmodem* 115200
+
+# 退出 screen: Ctrl+A 然后按 K
+```
+
+</Tab>
+
+</Tabs>
 
 :::success[成功标志]
 如果看到类似以下输出，说明 hello_world 运行成功：
 ```
-*** Booting Zephyr OS build v3.5.0 ***
+*** Booting Zephyr OS build v3.7.0 ***
 Hello World! nrf52840dk_nrf52840
 ```
 :::
@@ -561,7 +574,7 @@ Zephyr 支持数百种开发板，以下是一些常见的开发板：
 | nRF52840 DK | `nrf52840dk_nrf52840` | nRF52840 | 4 |
 | STM32 Nucleo-F401RE | `nucleo_f401re` | STM32F401RE | 1 |
 | ESP32 DevKitC | `esp32_devkitc_wroom` | ESP32 | 1 |
-| Arduino Uno R3 | `arduino_uno` | ATmega328P | 1 |
+| Arduino Uno R4 Minima | `arduino_uno_r4_minima` | RA4M1 | 1 |
 | QEMU x86 | `qemu_x86` | 模拟器 | 无（仅串口） |
 
 ### 设备树差异说明

@@ -41,7 +41,7 @@ title: 电池与电源调试
 1. 检查 GPIO 唤醒源配置 — 是否有多余的 GPIO 使能了唤醒
 2. 检查 RTC 闹钟是否意外触发
 3. 用示波器抓唤醒引脚，确认是哪个事件触发
-4. 检查 `CONFIG_PM_DEBUG` 内核日志
+4. 开启 `CONFIG_PM_STATS=y` 并调高 log 级别，观察 PM 状态切换日志
 
 ## 电源管理 (D-State / S-State)
 
@@ -54,7 +54,7 @@ title: 电池与电源调试
 1. **定位** — 检查 Zephyr PM 框架是否使能 (`CONFIG_PM`)
 2. 确认所有设备驱动都正确实现了 `PM_DEVICE` 回调
 3. 检查是否有设备因 `pm_device_runtime_get/put` 引用计数导致无法 suspend
-4. 使用 `poweroff` / `suspend-to-idle` shell 命令手动测试
+4. 使用 `pm` shell 命令组手动测试（如 `pm suspend`，需 `CONFIG_PM=y`）
 
 **Q：** ACPI 通知未到达 OS
 

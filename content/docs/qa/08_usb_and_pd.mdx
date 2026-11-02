@@ -79,7 +79,7 @@ title: USB & PD 调试
 
 **排查思路**：
 
-1. 确认 Billboard Class 驱动在 Zephyr 中已使能 (`CONFIG_USB_DEVICE_BILLBOARD=y`)
+1. 确认 Billboard 支持：Zephyr 3.7 的旧版 USB 设备栈没有内置 Billboard 类驱动，需要按 Billboard BOS 描述符规范自行实现（或评估升级到新版 USB 设备栈）
 2. 检查 Billboard 的 USB 描述符是否正确（BOS descriptor + Billboard capability）
 3. 确认 Billboard 仅在 Alt Mode 失败时激活（Alt Mode 成功时不应出现）
 4. 检查 Alternate Mode 的 SVID 和 Mode 是否正确上报
