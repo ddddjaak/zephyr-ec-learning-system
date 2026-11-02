@@ -132,13 +132,13 @@ button_0 {
 | 报错 | 原因与处理 |
 |------|-----------|
 | `undefined label xxx` | overlay 里 `&xxx` 的 label 在板级 DTS 不存在，先 `build/zephyr/zephyr.dts` 里搜 |
-| `no compatible nodefind` / 宏展开失败 | `compatible` 拼写与 binding 的 `compatible:` 不一致 |
+| `Missing binding for ...` / `no compatible ...` 类 binding 报错 | `compatible` 拼写与 binding 的 `compatible:` 不一致，或 binding 文件没被引入构建 |
 | 节点存在但驱动没实例化 | `status = "okay"` 忘写，或对应 Kconfig 子系统没开 |
 | 属性值类型不符 | binding 里定义 `type: int` 却写了字符串；看 binding 的 `type:` 与 `#size-cells` |
 | 引脚冲突 | 两个节点申请了同一引脚；查 `build/zephyr/zephyr.dts` 与 pinctrl 配置 |
 
 :::note
-**最有用的调试文件**：构建产物 `build/zephyr/zephyr.dts` 是叠加后的最终设备树，所有疑问以它为准；`build/zephyr/zephyr.dts` 旁边还有 `zephyr.dts.pre`（叠加前）可对照差异。
+**最有用的调试文件**：构建产物 `build/zephyr/zephyr.dts` 是叠加后的最终设备树，所有疑问以它为准；旁边的 `zephyr.dts.pre` 是**预处理展开后**的原始输入（include 已展开、label 尚未解析），可用于排查头文件/overlay 引入顺序问题。
 :::
 
 ## 相关页面

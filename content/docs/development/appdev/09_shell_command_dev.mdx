@@ -43,7 +43,7 @@ Battery: 89%, 11400 mV, discharging
 
 要点：
 
-- 返回 `0` 表示成功；返回负值（如 `-EINVAL`）时 Shell 显示用法提示并标红。
+- 返回 `0` 表示成功；返回负值（如 `-EINVAL`）不会触发任何 Shell 提示，仅作为 `shell_execute_cmd()` 的返回码传递给调用方——需要向用户报错时，在 handler 里自己调 `shell_error()`。参数**个数**不符时 Shell 才会自动打印用法提示（标红）。
 - 输出一律用 `shell_print()` / `shell_error()` / `shell_warn()`（自动带模块前缀与配色），不要用 `printk`——它绕过 Shell 通道。
 - `SHELL_CMD_REGISTER` 注册的是**根命令**，同名的只允许一个，建议以模块名命名（`battery`、`charger`、`thermal`）。
 
@@ -73,7 +73,7 @@ SHELL_CMD_ARG_REGISTER(chgset, NULL, "Set charge current [mA]",
 uart:~$ chgset 2000
 Charge current set to 2000 mA
 uart:~$ chgset
-chgset: command requires 1 parameter   ← 自动补全的用法提示来自 help 字符串
+chgset: wrong parameter count
 ```
 
 ## 子命令树
@@ -124,7 +124,7 @@ SHELL_DYNAMIC_CMD_CREATE(dsub_channel, channel_name_get);
 ## EC 模块的团队约定
 
 - **每个模块至少一条 `status` 子命令**：FAE 现场排错时按 `模块名 status` 就能拿到关键状态，不用翻日志。
-- 命令只读优先：查询类命令不加确认；**动作类命令（写 Flash、复位、强制关机）必须加参数确认**（如要求显式输入 `confirm`），参考 `kernel reboot` 的二次确认模式。
+- 命令只读优先：查询类命令不加确认；**动作类命令（写 Flash、复位、强制关机）必须加参数确认**（如要求显式输入 `confirm` 才执行）——Shell 不会替你做二次确认，这条约定要在 handler 里自己实现。
 - 命令名用模块名做根（`battery`、`pd`、`port80`），不要发明缩写——Shell 有 Tab 补全，长名字没有成本。
 - 量产固件如需保留 Shell 但裁剪命令面，用 `CONFIG_SHELL_CMDS_SELECT` 只编译白名单命令。
 

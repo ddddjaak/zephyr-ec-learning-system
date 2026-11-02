@@ -22,7 +22,7 @@ west build -b csce250x_evb app/ -p --build-dir build/ec_fw
 west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DCONFIG_LOG=y
 
 # 使用额外覆盖配置
-west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DOVERLAY_CONFIG=release.conf
+west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DEXTRA_CONF_FILE=release.conf
 ```
 
 编译零警告零错误即通过。产物生成在 `build/ec_fw/` 目录。

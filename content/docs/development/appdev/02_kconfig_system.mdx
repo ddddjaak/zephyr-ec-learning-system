@@ -88,7 +88,7 @@ C 代码中可直接使用：
 1. 模块默认配置 — Kconfig 中的 `default` 值
 2. Board 默认配置 — `boards/<board>_defconfig`
 3. `prj.conf` — 应用层主配置，最常用的修改方式
-4. 额外覆盖配置 — 通过 `-DOVERLAY_CONFIG=release.conf` 指定
+4. 额外覆盖配置 — 通过 `-DEXTRA_CONF_FILE=release.conf` 指定
 5. 命令行配置 — `west build -DCONFIG_LOG=y`，最高优先级
 
 ### 可视化配置

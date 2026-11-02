@@ -45,19 +45,6 @@ void battery_thread(void *p1, void *p2, void *p3)
     }
 }
 
-```c
-static const uint32_t battery_period = 100; /* ms */
-
-void battery_thread(void *p1, void *p2, void *p3)
-{
-    const uint32_t *period = p1;
-    while (true) {
-        battery_status_check();
-        battery_data_report();
-        k_msleep(*period);
-    }
-}
-
 /* delay 参数为 K_FOREVER：线程创建后挂起，由 start_all_tasks() 统一 k_thread_start() */
 K_THREAD_DEFINE(battery_tid, 2048, battery_thread,
                 (void *)&battery_period, NULL, NULL, 5, 0, K_FOREVER);

@@ -35,7 +35,7 @@ int fan_control_set_speed(uint8_t level)
 
 {
 
-if (level *> FAN_MAX_LEVEL) {
+if (level > FAN_MAX_LEVEL) {
 
 LOG_ERR("Invalid fan level: %d", level);
 
@@ -56,11 +56,11 @@ return 0;
 项目）时，提交规范至关重要。建议遵循如下格式：
 
 ```
-\<type*>(\<module*>): \<subject*>
+<type>(<module>): <subject>
 
-\<body*>
+<body>
 
-\<footer*>
+<footer>
 ```
 
 示例：

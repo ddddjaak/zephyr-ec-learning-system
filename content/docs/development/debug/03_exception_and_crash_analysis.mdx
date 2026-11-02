@@ -31,12 +31,12 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf);
 - `reason`：错误类型，如 `K_ERR_CPU_EXCEPTION`、`K_ERR_STACK_CHK_FAIL`；
 - `esf`：异常堆栈帧结构（Exception Stack Frame），包含寄存器内容。
 
-默认行为：
+默认行为（weak 符号，来自 `kernel/fatal.c`）：
 
-- 打印错误信息与寄存器现场；
-- 结束出错线程；若错误发生在系统关键上下文，则停机。
+- 打印错误原因与寄存器现场；
+- 然后无条件 `arch_system_halt()` **停机**。
 
-自定义处理：直接在应用中**覆盖** `k_sys_fatal_error_handler()`（返回 `K_FATAL_ERROR_HANDLED` 可跳过内核默认流程）：
+自定义处理：在应用中**覆盖** `k_sys_fatal_error_handler()`（返回值为 `void`）。自定义 handler 正常返回后，内核只终止**出错的线程**（非关键上下文时系统继续运行）；若希望停机，在 handler 里自行调用 `arch_system_halt()` 或 `sys_reboot()`：
 
 ```c
 #include <zephyr/kernel.h>
@@ -57,7 +57,7 @@ void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 ```
 
 :::warning
-自定义 handler 中只做"记录 + 重启"这类最简操作——此时内核状态已不可信，不要尝试恢复调度或调用可能再出错的子系统。
+自定义 handler 中只做"记录 + 重启/停机"这类最简操作——此时内核状态已不可信，不要尝试恢复调度或调用可能再出错的子系统。`K_ERR_KERNEL_PANIC` 等关键错误发生在系统线程时，返回后内核仍会停机。
 :::
 
 ## 断言机制（Assert Framework）

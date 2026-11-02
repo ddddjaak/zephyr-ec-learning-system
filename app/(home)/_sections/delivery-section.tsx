@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import { useScrollReveal } from '@/hooks/use-scroll-reveal';
 
 const highlights = [
-  { title: '90 页技术文档', desc: '从环境搭建、架构原理到量产部署——覆盖全生命周期，并按 EC / FAE / AE 角色提供学习路径。每模块独立成章，配架构图与可运行代码示例。' },
+  { title: '80+ 页技术文档', desc: '从环境搭建、架构原理到量产部署——覆盖全生命周期，并按 EC / FAE / AE 角色提供学习路径。每模块独立成章，配架构图与可运行代码示例。' },
   { title: '三芯片统一平台', desc: 'CSCE250X / CSCE2010 / CSCE2520 共享驱动模型。一套应用代码，编译时自动适配——产能弹性、备货灵活。' },
   { title: '传统 C51 → Zephyr 迁移方案', desc: '完整的逐模块迁移指南：GPIO、电源序列、键盘扫描、电池管理。分阶段策略 + 常见陷阱预警。' },
   { title: '量产级性能与安全', desc: '功耗调优、Flash/RAM 布局优化、MCUboot 安全启动。直接满足企业客户安全审计与量产基线要求。' },

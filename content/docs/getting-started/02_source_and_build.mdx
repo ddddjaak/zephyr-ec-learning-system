@@ -100,7 +100,7 @@ west build -b csce250x_evb app/ --build-dir build/ec_fw
 west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DCONFIG_LOG=y
 
 # 使用 release 配置覆盖文件
-west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DOVERLAY_CONFIG=release.conf
+west build -b csce250x_evb app/ --build-dir build/ec_fw -- -DEXTRA_CONF_FILE=release.conf
 
 # 查看 RAM 占用
 west build -t ram_report

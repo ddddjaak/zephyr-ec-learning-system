@@ -3,7 +3,7 @@ title: 错误码与崩溃速查
 description: Zephyr/POSIX 错误码含义、Fatal Error 类型与看日志的第一反应
 ---
 
-看日志定位问题的第一站。返回值为负的错误码沿 POSIX 语义（宏名跨平台一致，数值以工具链 errno.h 为准，本表只标 POSIX 标准段 1~34 的稳定数值）。系统性崩溃分析流程见[异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis)。
+看日志定位问题的第一站。返回值为负的错误码沿 POSIX 语义（宏名跨平台一致，数值以工具链 errno.h 为准：1~34 为各 libc 稳定段；`-ENOSYS`=88 按 Zephyr 自带 libc 核实；`-ETIMEDOUT` 等依工具链而定，不标数值）。系统性崩溃分析流程见[异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis)。
 
 ## 高频错误码（API 返回负值）
 
@@ -18,7 +18,7 @@ description: Zephyr/POSIX 错误码含义、Fatal Error 类型与看日志的第
 | `-ENODEV` | 19 | 设备不存在 | DTS 节点没写 `status = "okay"`，或驱动没编译进来 |
 | `-EINVAL` | 22 | 参数非法 | 传参越界、通道号错误、配置值超出 binding 约束 |
 | `-ENOSPC` | 28 | 空间不足 | Flash 写满、NVS 分区不足 |
-| `-ENOSYS` | 38 | 功能未实现 | 驱动只实现了部分 API（如没有 async 支持） |
+| `-ENOSYS` | 88 | 功能未实现 | 驱动只实现了部分 API（如没有 async 支持） |
 | `-ETIMEDOUT` | — | 超时 | 等待总线响应/信号量超时（数值依 libc 而定） |
 | `-EFAULT` | 14 | 非法地址 | 用户态/指针校验失败 |
 
