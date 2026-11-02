@@ -5,6 +5,10 @@
     "01_command_reference",
     "02_glossary",
     "03_hardware_interface",
-    "04_open_source_resources"
+    "04_open_source_resources",
+    "05_kconfig_cheatsheet",
+    "06_devicetree_cheatsheet",
+    "07_error_codes",
+    "08_release_notes"
   ]
 }

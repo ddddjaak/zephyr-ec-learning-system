@@ -2,6 +2,7 @@
   "title": "快速上手",
   "pages": [
     "index",
+    "00_learning_paths",
     "01_setup",
     "02_source_and_build",
     "03_flash_and_verify"

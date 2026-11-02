@@ -1,0 +1,82 @@
+---
+title: 错误码与崩溃速查
+description: Zephyr/POSIX 错误码含义、Fatal Error 类型与看日志的第一反应
+---
+
+看日志定位问题的第一站。返回值为负的错误码沿 POSIX 语义（宏名跨平台一致，数值以工具链 errno.h 为准，本表只标 POSIX 标准段 1~34 的稳定数值）。系统性崩溃分析流程见[异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis)。
+
+## 高频错误码（API 返回负值）
+
+| 错误码 | 值 | 含义 | EC 开发中的典型场景 |
+|--------|----|------|---------------------|
+| `-EIO` | 5 | I/O 错误 | I2C/SPI 传输 NACK 或总线卡死 |
+| `-EAGAIN` | 11 | 资源暂不可用，重试 | 非阻塞读取暂无数据 |
+| `-ENOMEM` | 12 | 内存不足 | 日志缓冲池耗尽、动态分配被禁用 |
+| `-EACCES` | 13 | 无权限 | 访问了未开放的寄存器/通道 |
+| `-EBUSY` | 16 | 设备忙 | 总线被其他传输占用未释放 |
+| `-EEXIST` | 17 | 已存在 | 重复注册同一节点/服务 |
+| `-ENODEV` | 19 | 设备不存在 | DTS 节点没写 `status = "okay"`，或驱动没编译进来 |
+| `-EINVAL` | 22 | 参数非法 | 传参越界、通道号错误、配置值超出 binding 约束 |
+| `-ENOSPC` | 28 | 空间不足 | Flash 写满、NVS 分区不足 |
+| `-ENOSYS` | 38 | 功能未实现 | 驱动只实现了部分 API（如没有 async 支持） |
+| `-ETIMEDOUT` | — | 超时 | 等待总线响应/信号量超时（数值依 libc 而定） |
+| `-EFAULT` | 14 | 非法地址 | 用户态/指针校验失败 |
+
+:::tip
+看到 `-ENODEV`，九成是设备树问题：先查 `build/zephyr/zephyr.dts` 里节点是否 `okay`、`device_is_ready()` 是否通过。看到 `-ETIMEDOUT`，先确认时钟与上拉电阻，再用逻辑分析仪看波形。
+:::
+
+## Fatal Error 类型
+
+Zephyr 致命错误头 `zephyr/fatal.h` 定义的原因码（日志形如 `E: >>> ZEPHYR FATAL ERROR 4: Kernel panic`）：
+
+| 原因码 | 数字 | 含义 | 第一反应 |
+|--------|------|------|----------|
+| `K_ERR_CPU_EXCEPTION` | 0 | CPU 异常（HardFault 等） | 看随后的异常帧：`PC`/`LR` 定位到函数；常见于野指针、未对齐访问 |
+| `K_ERR_SPURIOUS_IRQ` | 1 | 未知中断触发 | 中断号、优先级配置或向量表问题 |
+| `K_ERR_STACK_CHK_FAIL` | 2 | **栈溢出** | 日志会指出线程名；加大该线程栈（`CONFIG_XXX_STACK_SIZE`），或查深递归/大局部数组 |
+| `K_ERR_KERNEL_OOPS` | 3 | 内核 oops（`k_oops()`） | 按栈回溯定位调用者，通常是自己代码主动触发的保护 |
+| `K_ERR_KERNEL_PANIC` | 4 | 内核 panic（`k_panic()`） | 同上；内核在不一致状态下强制停机 |
+
+:::note
+开启 `CONFIG_STACK_SENTINEL=y`（见 [Kconfig 速查](/docs/reference/05_kconfig_cheatsheet)）后，栈溢出会以 `K_ERR_STACK_CHK_FAIL` 明确报出，而不是随机崩溃 —— 排查"偶发死机"的第一步就是开哨兵复现。
+:::
+
+## 日志级别与前缀
+
+| 前缀 | 级别 | 含义 |
+|------|------|------|
+| `E:` | Error | 错误，功能已失败（优先处理） |
+| `W:` | Warning | 警告，功能受损但可继续 |
+| `I:` | Info | 常规信息（启动流程、状态变化） |
+| `D:` | Debug | 调试细节（需 `CONFIG_LOG_DEFAULT_LEVEL=4`） |
+
+## 看到这些关键字怎么办
+
+| 日志关键字 | 大概率原因 | 去哪看 |
+|-----------|-----------|--------|
+| `ZEPHYR FATAL ERROR` | 致命错误，见上表 | [异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis) |
+| `Current thread: ... (xxx)` | 崩溃线程名，定位到模块 | 同上 |
+| `stack sentinel` / `Stack overflow` | 栈溢出 | [多线程与任务](/docs/best-practices/06_multithreading_and_tasks) |
+| `assertion failed` | 断言命中 | 按提示的文件：行号直接看 |
+| `device ... is not ready` | 设备未就绪/未使能 | [设备树速查](/docs/reference/06_devicetree_cheatsheet) |
+| `bus fault` / `mem manage fault` | 总线/内存访问异常 | [异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis) |
+| `esp` / `eSPI` reset 日志刷屏 | 主机复位链路抖动 | [USB 与 PD Q&A](/docs/qa/08_usb_and_pd)、[eSPI 参考](/docs/reference/03_hardware_interface) |
+
+## 资源占用分析命令
+
+```bash
+# RAM 都被谁占了（段/符号级别）
+west build -b <board> -d build -t ram_report
+
+# Flash 占用分布
+west build -b <board> -d build -t rom_report
+
+# 体积不合理时先看这两个报告再谈优化
+```
+
+## 相关页面
+
+- [异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis) — 完整的崩溃分析流程与案例
+- [运行时崩溃 Q&A](/docs/qa/05_runtime_crash) — 按现象查问题
+- [日志与调试](/docs/development/debug/01_logging_and_debug) — 把日志系统本身用好

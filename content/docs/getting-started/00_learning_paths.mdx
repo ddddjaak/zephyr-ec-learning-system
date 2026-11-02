@@ -1,0 +1,79 @@
+---
+title: 按角色学习路径
+description: EC 固件工程师、FAE、AE、新成员与迁移工程师的定制阅读路线
+---
+
+本站内容按主题组织（上手 → 开发 → 内核 → 移植 → 实践 → 参考 → 问答），但不同岗位关心的重点不一样。这一页按角色给出推荐阅读顺序，帮你用最短时间拿到岗位所需的知识面。
+
+:::note
+每条路径里的页面都是必读正文，遇到与本岗位无关的模块章节可以跳过，等用到再回来查。全站支持搜索，遇到不认识的术语先查[术语表](/docs/reference/02_glossary)。
+:::
+
+## EC 固件工程师
+
+**目标**：独立完成功能模块开发、外设驱动适配与问题定位，代码符合团队规范。
+
+| 阶段 | 内容 | 页面 |
+|------|------|------|
+| ① 环境与全流程（0.5 天） | 工具链安装、编译、烧录验证走通一遍 | [环境搭建](/docs/getting-started/01_setup) → [获取源码与编译](/docs/getting-started/02_source_and_build) → [烧录与验证](/docs/getting-started/03_flash_and_verify) |
+| ② 架构认知（1 天） | 分层模型、目录结构、配置体系 | [分层架构](/docs/development/architecture/01_layered_architecture) → [目录结构](/docs/development/architecture/03_directory_structure) → [配置体系](/docs/development/architecture/05_configuration) |
+| ③ 开发模型（1~2 天） | 任务与事件模型、系统服务、Kconfig | [任务与事件模型](/docs/development/appdev/04_task_and_event_model) → [系统服务](/docs/development/appdev/07_system_services) → [Kconfig 配置系统](/docs/development/appdev/02_kconfig_system) |
+| ④ 动手开发（2~3 天） | 新增功能模块、外设驱动调用 | [新增功能模块](/docs/development/appdev/01_new_feature_module) → [外设驱动指南](/docs/development/appdev/03_peripheral_driver_guide) |
+| ⑤ 模块精读（按分工） | 只读你负责的模块 | [功能模块目录](/docs/development/modules/01_system_infrastructure)（键盘 / 电池 / 热管理 / USB-PD 等按需选读） |
+| ⑥ 调试能力（持续） | 日志、崩溃分析、功能验证 | [日志与调试](/docs/development/debug/01_logging_and_debug) → [异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis) → [功能验证](/docs/development/debug/04_functional_verification) |
+| ⑦ 量产级实践 | 规范、多线程、日志诊断 | [代码规范与提交](/docs/best-practices/01_coding_style_and_commits) → [多线程与任务](/docs/best-practices/06_multithreading_and_tasks) → [日志与诊断](/docs/best-practices/07_logging_and_diagnostics) |
+
+**日常速查**：[命令速查](/docs/reference/01_command_reference) · [硬件接口参考](/docs/reference/03_hardware_interface) · [Kconfig 速查](/docs/reference/05_kconfig_cheatsheet) · [错误码速查](/docs/reference/07_error_codes)
+
+## FAE（现场应用工程师）
+
+**目标**：快速定位客户现场问题、指导客户抓日志复现、解释固件行为，把问题带回给研发时有完整证据链。
+
+| 阶段 | 内容 | 页面 |
+|------|------|------|
+| ① 全局认知（0.5 天） | 这套 EC 方案是什么、与客户在用的传统 EC 差异在哪 | [分层架构](/docs/development/architecture/01_layered_architecture) → [与传统 EC 对比](/docs/development/architecture/02_vs_legacy_ec) |
+| ② 亲手走一遍（1 天） | 客户环境里的坑，自己先踩过 | [快速上手三章](/docs/getting-started)（环境 / 编译 / 烧录） |
+| ③ 高频问题库（2 天） | 按客户问题类型建立索引记忆 | [Q&A 知识库](/docs/qa)：[构建与配置](/docs/qa/04_build_and_config) → [运行崩溃](/docs/qa/05_runtime_crash) → [固件升级](/docs/qa/06_firmware_upgrade) → [中断与时序](/docs/qa/11_interrupt_and_timing) |
+| ④ 排错方法论（1 天） | 现场抓日志、读崩溃栈 | [FAQ 与排错](/docs/development/debug/05_faq_and_troubleshooting) → [日志与调试](/docs/development/debug/01_logging_and_debug) → [异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis) |
+| ⑤ 模块行为速成（按客户项目） | 客户问什么模块，就精读哪一章 | [功能模块目录](/docs/development/modules/01_system_infrastructure) |
+| ⑥ 升级与安全响应 | 客户固件升级失败、安全诉求的应答口径 | [安全与固件更新](/docs/development/modules/08_security_and_firmware_update) → [固件升级 Q&A](/docs/qa/06_firmware_upgrade) |
+
+**随身工具**：[命令速查](/docs/reference/01_command_reference) · [硬件接口参考](/docs/reference/03_hardware_interface)（对接客户硬件时用） · [错误码速查](/docs/reference/07_error_codes)（看日志先查这里）
+
+## AE（应用工程师）
+
+**目标**：向客户讲清方案价值、完成评估板演示、评估客户平台移植可行性。
+
+| 阶段 | 内容 | 页面 |
+|------|------|------|
+| ① 全流程体验（1 天） | 演示前自己先完整跑通 | [快速上手三章](/docs/getting-started) |
+| ② 方案叙事（0.5 天） | 给客户讲架构与迁移收益的标准说法 | [分层架构](/docs/development/architecture/01_layered_architecture) → [与传统 EC 对比](/docs/development/architecture/02_vs_legacy_ec) |
+| ③ 演示重点模块（2 天） | 键盘、电池充电、USB-PD 是客户最常点名的三项 | [键盘输入](/docs/development/modules/04_keyboard_input) → [电池充电](/docs/development/modules/05_battery_charging) → [USB 与 PD](/docs/development/modules/07_usb_and_pd) |
+| ④ 移植可行性评估（2 天） | 客户平台从友商 EC 迁移的工作量判断 | [移植流程](/docs/porting/01_porting_guide) → [迁移概览](/docs/porting/06_migration_from_legacy_ec)（含 [ITE](/docs/porting/06_migration_from_legacy_ec/01_ite) / [Nuvoton](/docs/porting/06_migration_from_legacy_ec/02_nuvoton) 对照） |
+| ⑤ 常见追问储备 | 客户评估期的高频问题 | [Q&A 知识库](/docs/qa) 精选（构建 / 外设 / 升级三类） |
+
+## 新成员：30-60-90 天计划
+
+| 阶段 | 目标 | 路径 |
+|------|------|------|
+| 第 1 个月 | 环境能跑、代码能读、能提交 | [快速上手三章](/docs/getting-started) → [Zephyr 入门四章](/docs/zephyr-kernel/01_introduction)（简介 / 工程结构 / West / 示例）→ [分层架构](/docs/development/architecture/01_layered_architecture) + [目录结构](/docs/development/architecture/03_directory_structure) |
+| 第 2 个月 | 独立完成一个小特性 | [内核机制](/docs/zephyr-kernel/05_kernel_mechanisms) → [配置系统](/docs/zephyr-kernel/06_config_system) → [驱动模型](/docs/zephyr-kernel/07_driver_model) → [应用开发五章](/docs/development/appdev/01_new_feature_module) → 练手：从 [调试与 GPIO 模块](/docs/development/modules/10_debug_and_gpio) 挑一个小功能实现 |
+| 第 3 个月 | 参与真实 bringup / 模块开发 | [功能模块](/docs/development/modules/01_system_infrastructure) 精读负责模块 → [调试与验证](/docs/development/debug/01_logging_and_debug) → [最佳实践](/docs/best-practices/01_coding_style_and_commits) 全部 → 对照 [Bringup 清单](/docs/porting/07_bringup_checklist) 跟一次完整 bringup |
+
+## 从传统 EC（C51 裸机）迁移的工程师
+
+**目标**：把"超级循环 + 寄存器直操"的开发习惯映射到 Zephyr 的线程、设备树与驱动模型上。
+
+1. 心智模型转换：[与传统 EC 对比](/docs/development/architecture/02_vs_legacy_ec) —— 看懂中断下半部、工作队列、线程优先级分别对应裸机里的什么。
+2. 平台迁移对照：[迁移概览](/docs/porting/06_migration_from_legacy_ec)，如果你来自 ITE IT557x 或 Nuvoton NPCX 系列，直接读对应[对照指南](/docs/porting/06_migration_from_legacy_ec/01_ite)。
+3. Zephyr 开发范式：[基础示例](/docs/zephyr-kernel/04_basic_examples) + [任务与事件模型](/docs/development/appdev/04_task_and_event_model)。
+4. 硬件描述方式：[设备树与驱动适配](/docs/porting/03_devicetree_and_driver) + [设备树速查](/docs/reference/06_devicetree_cheatsheet) —— 裸机时代的 `sfr` 地址映射，在这里是 DTS 节点 + `DT_` 宏。
+5. 配置方式：[Kconfig 速查](/docs/reference/05_kconfig_cheatsheet) —— 裸机时代的条件编译开关，在这里是 Kconfig 符号。
+
+## 本站使用技巧
+
+- **搜索**：右上角搜索框可全文检索标题与正文，中文英文都可以；术语不确定时用英文缩写搜（如 `eSPI`、`SMBus`）。
+- **每页目录**：文档右侧 TOC 显示本页标题层级，长页面（如[架构设计](/docs/zephyr-kernel/09_architecture_design)）建议配合 TOC 跳读。
+- **提示框**：`:::note` / `:::warning` 样式的提示框里是经验性结论与易错点，值得逐条看。
+- **图表**：架构图与流程图均为 Mermaid 渲染，暗色主题下配色自动适配。
+- **代码块**：所有命令默认在 `ecfw-zephyr` 工作区根目录执行；Windows 与 Linux 差异用 `<Tabs>` 切换展示。

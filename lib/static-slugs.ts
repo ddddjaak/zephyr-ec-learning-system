@@ -181,6 +181,10 @@ export const staticSlugs: string[][] = [
   ],
   [
     "getting-started",
+    "00_learning_paths"
+  ],
+  [
+    "getting-started",
     "01_setup"
   ],
   [
@@ -304,55 +308,71 @@ export const staticSlugs: string[][] = [
     "04_open_source_resources"
   ],
   [
+    "reference",
+    "05_kconfig_cheatsheet"
+  ],
+  [
+    "reference",
+    "06_devicetree_cheatsheet"
+  ],
+  [
+    "reference",
+    "07_error_codes"
+  ],
+  [
+    "reference",
+    "08_release_notes"
+  ],
+  [
     "reference"
   ],
   [
     "zephyr-kernel",
-    "01_kernel_mechanisms"
+    "01_introduction"
   ],
   [
     "zephyr-kernel",
-    "02_config_system"
+    "02_project_structure"
   ],
   [
     "zephyr-kernel",
-    "03_driver_model"
+    "03_west_tool"
   ],
   [
     "zephyr-kernel",
-    "04_subsystems"
+    "04_basic_examples"
   ],
   [
     "zephyr-kernel",
-    "05_optimization"
+    "05_kernel_mechanisms"
   ],
   [
     "zephyr-kernel",
-    "06_security"
+    "06_config_system"
   ],
   [
     "zephyr-kernel",
-    "07_kernel_source"
+    "07_driver_model"
   ],
   [
     "zephyr-kernel",
-    "08_introduction"
+    "08_subsystems"
   ],
   [
     "zephyr-kernel",
-    "09_project_structure"
+    "09_architecture_design"
   ],
   [
     "zephyr-kernel",
-    "10_west_tool"
+    "10_optimization"
   ],
   [
     "zephyr-kernel",
-    "11_basic_examples"
+    "11_security"
   ],
   [
     "zephyr-kernel",
-    "12_architecture_design"
+    "12_kernel_source"
   ],
   [
     "zephyr-kernel",

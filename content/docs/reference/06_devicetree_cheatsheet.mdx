@@ -1,0 +1,148 @@
+---
+title: 设备树速查
+description: EC 开发高频 Devicetree 写法与 DT_ 宏速查
+---
+
+设备树描述"板子上有什么硬件"，Kconfig 描述"固件要哪些软件能力"。本页速查 EC 开发中最高频的 DTS 写法与 C 宏；系统性讲解见 [设备树与驱动适配](/docs/porting/03_devicetree_and_driver)。
+
+## 文件类型与叠加顺序
+
+| 文件 | 位置 | 用途 |
+|------|------|------|
+| 板级 DTS | `boards/<vendor>/<board>/<board>.dts` | 板级基线：完整的节点定义 |
+| 板级 Kconfig | 同目录 `<board>_defconfig` | 板级默认配置（与 DTS 配套） |
+| 应用 overlay | `app/*.overlay`（或 `app.overlay`） | 应用对板级 DTS 的**增补与修改**，不直接改板级文件 |
+| Shield | `boards/shields/<name>/` | 跨板复用的外设子板描述 |
+
+叠加顺序：板级 `.dts` → 应用 `.overlay`（后到者覆盖同名属性）。overlay 里只写需要**改动**的节点，用 `&nodelabel` 引用：
+
+```dts
+&i2c0 {
+    status = "okay";
+    clock-frequency = <I2C_BITRATE_FAST>;
+
+    temp_sensor: tmp1075@49 {
+        compatible = "ti,tmp1075";
+        reg = <0x49>;
+        status = "okay";
+    };
+};
+```
+
+## 高频节点写法
+
+### 引用已有节点（overlay 标准姿势）
+
+```dts
+/* &label 是板级 DTS 里节点的 label，编译期展开为节点路径 */
+&uart0 {
+    status = "okay";
+    current-speed = <115200>;
+};
+```
+
+### 关闭板上不需要的外设
+
+```dts
+&spi1 {
+    status = "disabled";
+};
+```
+
+### 删除与改名
+
+```dts
+/ {
+    /delete-node/ unused_sensor;
+};
+
+&i2c1 {
+    /delete-property/ clock-frequency;
+};
+```
+
+### chosen：把外设"指派"给系统能力
+
+```dts
+/ {
+    chosen {
+        zephyr,console = &uart0;       /* printk / 日志走哪个口 */
+        zephyr,shell-uart = &uart0;    /* shell 走哪个口 */
+    };
+};
+```
+
+### GPIO 引脚描述
+
+```dts
+led_red: led_0 {
+    gpios = <&gpioa 5 GPIO_ACTIVE_LOW>;   /* 端口 引脚 极性标志 */
+};
+
+button_0 {
+    gpios = <&gpiob 2 GPIO_ACTIVE_LOW | GPIO_PULL_UP>;
+};
+```
+
+常用标志：`GPIO_ACTIVE_LOW`（低电平有效）、`GPIO_PULL_UP` / `GPIO_PULL_DOWN`、`GPIO_OPEN_DRAIN`、`GPIO_OUTPUT_HIGH`（初始化电平）。
+
+### 别名与分区
+
+```dts
+/ {
+    aliases {
+        led0 = &led_red;     /* 通用示例代码按别名取设备 */
+    };
+};
+
+&flash0 {
+    partitions {
+        compatible = "fixed-partitions";
+        #address-cells = <1>;
+        #size-cells = <1>;
+
+        slot0_partition: partition@0 {      /* MCUboot 主槽 */
+            reg = <0x0 0x40000>;
+        };
+        storage_partition: partition@40000 { /* NVS/参数区 */
+            reg = <0x40000 0x10000>;
+        };
+    };
+};
+```
+
+## C 代码中的 DT_ 宏速查
+
+| 场景 | 宏 |
+|------|------|
+| 按 label 取节点 | `DT_NODELABEL(temp_sensor)` |
+| 读属性 | `DT_PROP(node, max_frequency)` |
+| 读数组属性第 i 项 | `DT_PROP_BY_IDX(node, reg, 0)` |
+| 节点是否使能 | `DT_NODE_HAS_STATUS(node, okay)` |
+| 实例化驱动（Devicetree 驱动标准入口） | `DT_INST_FOREACH_STATUS_OKAY(...)` + `DT_INST_PROP(...)` |
+| GPIO 描述符（推荐，含极性处理） | `GPIO_DT_SPEC_GET(DT_NODELABEL(led_red), gpios)` |
+| 检查设备就绪 | `device_is_ready(DEVICE_DT_GET(node))` |
+
+:::warning
+`DEVICE_DT_GET()` 在链接期取设备句柄但不触发初始化检查；拿到句柄后第一件事必须是 `device_is_ready()`，尤其在板级改动后。
+:::
+
+## 常见报错对照
+
+| 报错 | 原因与处理 |
+|------|-----------|
+| `undefined label xxx` | overlay 里 `&xxx` 的 label 在板级 DTS 不存在，先 `build/zephyr/zephyr.dts` 里搜 |
+| `no compatible nodefind` / 宏展开失败 | `compatible` 拼写与 binding 的 `compatible:` 不一致 |
+| 节点存在但驱动没实例化 | `status = "okay"` 忘写，或对应 Kconfig 子系统没开 |
+| 属性值类型不符 | binding 里定义 `type: int` 却写了字符串；看 binding 的 `type:` 与 `#size-cells` |
+| 引脚冲突 | 两个节点申请了同一引脚；查 `build/zephyr/zephyr.dts` 与 pinctrl 配置 |
+
+:::note
+**最有用的调试文件**：构建产物 `build/zephyr/zephyr.dts` 是叠加后的最终设备树，所有疑问以它为准；`build/zephyr/zephyr.dts` 旁边还有 `zephyr.dts.pre`（叠加前）可对照差异。
+:::
+
+## 相关页面
+
+- [设备树与驱动适配](/docs/porting/03_devicetree_and_driver) — 移植场景下的完整流程
+- [外设驱动指南](/docs/development/appdev/03_peripheral_driver_guide) — 在应用代码里调用 DTS 设备
+- [GPIO 与 Pinmux Q&A](/docs/qa/12_gpio_and_pinmux) — 引脚类问题排查

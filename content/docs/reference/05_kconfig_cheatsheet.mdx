@@ -1,0 +1,98 @@
+---
+title: Kconfig 选项速查
+description: EC 开发高频 Kconfig 符号分组速查，含排查符号不生效的思路
+---
+
+EC 固件的功能开关几乎都通过 Kconfig 控制。本页按用途分组列出高频符号（基于 Zephyr 3.7 LTS），配置语法与生效机制的完整讲解见 [Kconfig 配置系统](/docs/development/appdev/02_kconfig_system)。
+
+:::note
+芯片平台专属符号（如 `CONFIG_CSCE_XXX`）以 EC 固件仓库的 `Kconfig` 文件为准，本页只收录 Zephyr 上游通用符号。确认某个符号是否存在：在构建产物 `build/zephyr/.config` 里搜索，或 `west build -t menuconfig` 交互查找。
+:::
+
+## 日志与控制台
+
+| 符号 | 作用 |
+|------|------|
+| `CONFIG_LOG=y` | 启用日志子系统总开关 |
+| `CONFIG_LOG_MODE_DEFERRED=y` | 后台线程异步输出（默认推荐，运行时开销小） |
+| `CONFIG_LOG_MODE_IMMEDIATE=y` | 同步立即输出（调试崩溃时用，日志不丢但影响时序） |
+| `CONFIG_LOG_DEFAULT_LEVEL=3` | 默认日志级别：0 关闭 / 1 错误 / 2 警告 / 3 信息 / 4 调试 |
+| `CONFIG_LOG_BACKEND_UART=y` | 日志输出到 UART 后端 |
+| `CONFIG_LOG_BACKEND_RTT=y` | 输出到 SEGGER RTT（J-Link 场景，不占用串口） |
+| `CONFIG_SERIAL=y` + `CONFIG_UART_CONSOLE=y` | 串口控制台（shell/日志的物理通道） |
+
+## Shell 调试
+
+| 符号 | 作用 |
+|------|------|
+| `CONFIG_SHELL=y` | 启用 shell 总开关 |
+| `CONFIG_SHELL_BACKEND_SERIAL=y` | shell 走串口后端 |
+| `CONFIG_KERNEL_SHELL=y` | 内核诊断命令：`kernel threads`、`kernel stacks`、`kernel uptime` |
+| `CONFIG_SHELL_STACK_SIZE=4096` | shell 线程栈大小（默认偏小，加了密集命令再调） |
+| `CONFIG_THREAD_ANALYZER=y` | 线程 CPU 占用分析（配合 `kernel threads` 查看） |
+
+## 断言与运行时防护
+
+| 符号 | 作用 |
+|------|------|
+| `CONFIG_ASSERT=y` | 启用断言（量产关闭，调试必开） |
+| `CONFIG_ASSERT_LEVEL=2` | 断言级别 |
+| `CONFIG_STACK_SENTINEL=y` | 栈哨兵：栈溢出时触发 `K_ERR_STACK_CHK_FAIL` |
+| `CONFIG_THREAD_STACK_INFO=y` | 记录线程栈使用信息（配合 `kernel stacks` 命令） |
+| `CONFIG_DEBUG_OPTIMIZATIONS=y` | 调试优化等级（-Og，单步跟踪友好） |
+
+## 体积与性能
+
+| 符号 | 作用 |
+|------|------|
+| `CONFIG_SIZE_OPTIMIZATIONS=y` | 按体积优化（-Os，EC 固件默认） |
+| `CONFIG_SPEED_OPTIMIZATIONS=y` | 按速度优化（-O2） |
+| `CONFIG_MAIN_STACK_SIZE=2048` | 主线程栈大小 |
+| `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=2048` | 系统工作队列栈（驱动 deferred work 都跑在这里，偏小易溢出） |
+| `CONFIG_ISR_STACK_SIZE=2048` | 中断栈大小 |
+| `CONFIG_IDLE_STACK_SIZE=320` | 空闲线程栈 |
+| `CONFIG_HEAP_MEM_POOL_SIZE=0` | 堆大小（EC 固件一般禁动态分配，保持 0） |
+
+## 电源管理
+
+| 符号 | 作用 |
+|------|------|
+| `CONFIG_PM=y` | 启用系统电源管理（idle 线程进入低功耗） |
+| `CONFIG_PM_DEVICE=y` | 设备级电源管理（suspend/resume 回调） |
+| `CONFIG_PM_DEVICE_RUNTIME=y` | 运行时按需 suspend 空闲设备 |
+| `CONFIG_TICKLESS_KERNEL=y` | 无 tick 内核（空闲时不打周期中断，低功耗必备） |
+
+## 总线与外设
+
+| 符号 | 作用 |
+|------|------|
+| `CONFIG_GPIO=y` `CONFIG_I2C=y` `CONFIG_SPI=y` `CONFIG_ADC=y` `CONFIG_PWM=y` | 基础外设子系统使能 |
+| `CONFIG_ESPI=y` | eSPI 总线（对接主机 PCH） |
+| `CONFIG_ESPI_PERIPHERAL_CHANNEL=y` | eSPI 外设通道（KBC/8042、 ACPI 等虚拟外设） |
+| `CONFIG_FLASH=y` `CONFIG_FLASH_PAGE_LAYOUT=y` | Flash 子系统 |
+| `CONFIG_SETTINGS=y` | 设置子系统（参数持久化框架） |
+| `CONFIG_NVS=y` | NVS 存储（基于 Flash 的键值存储后端） |
+
+## 启动与升级
+
+| 符号 | 作用 |
+|------|------|
+| `CONFIG_BOOT_BANNER=y` | 启动横幅（量产可关，省时间省体积） |
+| `CONFIG_BOOTLOADER_MCUBOOT=y` | 固件由 MCUboot 引导（OTA 升级前置条件） |
+| `CONFIG_MCUBOOT_IMG_MANAGER=y` | 镜像管理（双槽 A/B 升级） |
+| `CONFIG_WATCHDOG=y` | 看门狗子系统 |
+| `CONFIG_WDT_DISABLE_AT_BOOT=n` | 启动时不关闭看门狗（量产建议保持喂狗） |
+
+## 符号不生效？排查顺序
+
+1. **拼写检查**：`build/zephyr/.config` 搜符号名，搜不到 = 名字错了或依赖未满足。
+2. **依赖未满足**：`west build -t menuconfig` 里搜索该符号，若被 `depends on` 灰掉，先满足依赖。
+3. **被更高优先级覆盖**：配置优先级为 芯片默认 < 板级 `defconfig` < 应用 `prj.conf` < `west build` 传入的 `-DCONFIG_XXX`，确认没有在更高层被改写。
+4. **conf 片段没被加载**：`build/zephyr/.config` 顶部会列出合并来源；用 `EXTRA_CONF_FILE` 引入的片段检查路径是否正确。
+5. **需要重新生成**：改了 `prj.conf` 必须重新 `west build`（增量构建会自动感知，直接跑旧 `build/` 里的命令不会生效）。
+
+## 相关页面
+
+- [Kconfig 配置系统](/docs/development/appdev/02_kconfig_system) — 语法、分层与自定义 Kconfig
+- [配置体系](/docs/development/architecture/05_configuration) — 架构层视角的配置组织
+- [构建与配置 Q&A](/docs/qa/04_build_and_config) — 常见构建报错

@@ -2,7 +2,7 @@
 title: 参考手册
 ---
 
-快速查阅——命令、术语、硬件接口、开源资源。四种完全不同类型的参考，各取所需。
+快速查阅——命令、术语、配置、硬件接口、开源资源与版本信息。各取所需，常查常新。
 
 <div className="feature-cards my-6">
 
@@ -20,6 +20,27 @@ title: 参考手册
   <span className="feature-card-arrow" style={{"color":"#8b5cf6"}}>查阅 →</span>
 </a>
 
+<a className="feature-card" href="/docs/reference/05_kconfig_cheatsheet" style={{"borderColor":"rgba(245,158,11,0.25)","background":"rgba(245,158,11,0.02)"}}>
+  <div className="feature-card-icon" style={{"background":"linear-gradient(135deg, #f59e0b, #d97706)"}}>⚙️</div>
+  <strong>Kconfig 速查</strong>
+  <p>日志、Shell、断言、功耗、总线、升级——高频 Kconfig 符号按用途分组，附"符号不生效"排查顺序。</p>
+  <span className="feature-card-arrow" style={{"color":"#f59e0b"}}>速查 →</span>
+</a>
+
+<a className="feature-card" href="/docs/reference/06_devicetree_cheatsheet" style={{"borderColor":"rgba(20,184,166,0.25)","background":"rgba(20,184,166,0.02)"}}>
+  <div className="feature-card-icon" style={{"background":"linear-gradient(135deg, #14b8a6, #0d9488)"}}>🌳</div>
+  <strong>设备树速查</strong>
+  <p>overlay 写法、chosen/别名/分区、DT_ 宏对照表，以及 `zephyr.dts` 调试技巧与报错对照。</p>
+  <span className="feature-card-arrow" style={{"color":"#14b8a6"}}>速查 →</span>
+</a>
+
+<a className="feature-card" href="/docs/reference/07_error_codes" style={{"borderColor":"rgba(239,68,68,0.25)","background":"rgba(239,68,68,0.02)"}}>
+  <div className="feature-card-icon" style={{"background":"linear-gradient(135deg, #ef4444, #dc2626)"}}>🚨</div>
+  <strong>错误码与崩溃速查</strong>
+  <p>错误码含义与典型场景、Fatal Error 类型对照、日志关键字速查——看日志定位问题的第一站。</p>
+  <span className="feature-card-arrow" style={{"color":"#ef4444"}}>速查 →</span>
+</a>
+
 <a className="feature-card" href="/docs/reference/03_hardware_interface" style={{"borderColor":"rgba(236,72,153,0.25)","background":"rgba(236,72,153,0.02)"}}>
   <div className="feature-card-icon" style={{"background":"linear-gradient(135deg, #ec4899, #db2777)"}}>🔌</div>
   <strong>硬件接口参考</strong>
@@ -32,6 +53,13 @@ title: 参考手册
   <strong>开源资源链接</strong>
   <p>Zephyr RTOS、MCUboot、ARM 工具链、社区论坛——开源生态资源汇总。</p>
   <span className="feature-card-arrow" style={{"color":"#10b981"}}>浏览 →</span>
+</a>
+
+<a className="feature-card" href="/docs/reference/08_release_notes" style={{"borderColor":"rgba(100,116,139,0.25)","background":"rgba(100,116,139,0.02)"}}>
+  <div className="feature-card-icon" style={{"background":"linear-gradient(135deg, #64748b, #475569)"}}>🏷️</div>
+  <strong>版本与变更</strong>
+  <p>手册适用范围、版本历史与变更记录——确认资料与你手头工程是否匹配。</p>
+  <span className="feature-card-arrow" style={{"color":"#64748b"}}>查看 →</span>
 </a>
 
 </div>
