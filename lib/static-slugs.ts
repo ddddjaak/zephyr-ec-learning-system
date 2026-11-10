@@ -385,7 +385,19 @@ export const staticSlugs: string[][] = [
   ],
   [
     "zephyr-kernel",
-    "13_community_contribution"
+    "13_async_messaging"
+  ],
+  [
+    "zephyr-kernel",
+    "14_userspace"
+  ],
+  [
+    "zephyr-kernel",
+    "15_object_lifecycle"
+  ],
+  [
+    "zephyr-kernel",
+    "16_community_contribution"
   ],
   [
     "zephyr-kernel"
