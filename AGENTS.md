@@ -4,7 +4,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 # AGENTS.md — Chipsea Zephyr EC Manual
 
-Fumadocs (Next.js 16) 构建的 EC 固件开发手册。源文件：85 `.mdx` 在 `content/docs/`，分 7 个章节。
+Fumadocs (Next.js 16) 构建的 EC 固件开发手册。源文件：95 `.mdx` 在 `content/docs/`，分 7 个章节。
 
 ## 命令
 

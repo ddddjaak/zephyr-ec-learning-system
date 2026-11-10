@@ -22,6 +22,7 @@ description: EC 固件工程师、FAE、AE、新成员与迁移工程师的定�
 | ⑤ 模块精读（按分工） | 只读你负责的模块 | [功能模块目录](/docs/development/modules/01_system_infrastructure)（键盘 / 电池 / 热管理 / USB-PD 等按需选读） |
 | ⑥ 调试能力（持续） | 日志、崩溃分析、功能验证 | [日志与调试](/docs/development/debug/01_logging_and_debug) → [异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis) → [功能验证](/docs/development/debug/04_functional_verification) |
 | ⑦ 量产级实践 | 规范、多线程、日志诊断 | [代码规范与提交](/docs/best-practices/01_coding_style_and_commits) → [多线程与任务](/docs/best-practices/06_multithreading_and_tasks) → [日志与诊断](/docs/best-practices/07_logging_and_diagnostics) |
+| ⑧ 内核进阶（选修） | 异步消息、权限隔离、内存池 | [异步与消息总线](/docs/zephyr-kernel/13_async_messaging)（k_poll / zbus / k_timeout）→ [用户态与权限](/docs/zephyr-kernel/14_userspace) → [对象生命周期与内存池](/docs/zephyr-kernel/15_object_lifecycle) |
 
 **日常速查**：[命令速查](/docs/reference/01_command_reference) · [硬件接口参考](/docs/reference/03_hardware_interface) · [Kconfig 速查](/docs/reference/05_kconfig_cheatsheet) · [错误码速查](/docs/reference/07_error_codes)
 
@@ -57,7 +58,7 @@ description: EC 固件工程师、FAE、AE、新成员与迁移工程师的定�
 | 阶段 | 目标 | 路径 |
 |------|------|------|
 | 第 1 个月 | 环境能跑、代码能读、能提交 | [快速上手三章](/docs/getting-started) → [Zephyr 入门四章](/docs/zephyr-kernel/01_introduction)（简介 / 工程结构 / West / 示例）→ [分层架构](/docs/development/architecture/01_layered_architecture) + [目录结构](/docs/development/architecture/03_directory_structure) |
-| 第 2 个月 | 独立完成一个小特性 | [内核机制](/docs/zephyr-kernel/05_kernel_mechanisms) → [配置系统](/docs/zephyr-kernel/06_config_system) → [驱动模型](/docs/zephyr-kernel/07_driver_model) → [应用开发五章](/docs/development/appdev/01_new_feature_module) → 练手：从 [调试与 GPIO 模块](/docs/development/modules/10_debug_and_gpio) 挑一个小功能实现 |
+| 第 2 个月 | 独立完成一个小特性 | [内核机制](/docs/zephyr-kernel/05_kernel_mechanisms) → [配置系统](/docs/zephyr-kernel/06_config_system) → [驱动模型](/docs/zephyr-kernel/07_driver_model) → [内核进阶三篇](/docs/zephyr-kernel/13_async_messaging)（异步消息 / 用户态 / 对象生命周期）→ [应用开发五章](/docs/development/appdev/01_new_feature_module) → 练手：从 [调试与 GPIO 模块](/docs/development/modules/10_debug_and_gpio) 挑一个小功能实现 |
 | 第 3 个月 | 参与真实 bringup / 模块开发 | [功能模块](/docs/development/modules/01_system_infrastructure) 精读负责模块 → [调试与验证](/docs/development/debug/01_logging_and_debug) → [最佳实践](/docs/best-practices/01_coding_style_and_commits) 全部 → 对照 [Bringup 清单](/docs/porting/07_bringup_checklist) 跟一次完整 bringup |
 
 ## 从传统 EC（C51 裸机）迁移的工程师
@@ -66,7 +67,7 @@ description: EC 固件工程师、FAE、AE、新成员与迁移工程师的定�
 
 1. 心智模型转换：[与传统 EC 对比](/docs/development/architecture/02_vs_legacy_ec) —— 看懂中断下半部、工作队列、线程优先级分别对应裸机里的什么。
 2. 平台迁移对照：[迁移概览](/docs/porting/06_migration_from_legacy_ec)，如果你来自 ITE IT557x 或 Nuvoton NPCX 系列，直接读对应[对照指南](/docs/porting/06_migration_from_legacy_ec/01_ite)。
-3. Zephyr 开发范式：[基础示例](/docs/zephyr-kernel/04_basic_examples) + [任务与事件模型](/docs/development/appdev/04_task_and_event_model)。
+3. Zephyr 开发范式：[基础示例](/docs/zephyr-kernel/04_basic_examples) + [任务与事件模型](/docs/development/appdev/04_task_and_event_model)。进阶看 [异步与消息总线](/docs/zephyr-kernel/13_async_messaging) —— 裸机时代自管的环形缓冲与事件标志，在这里是 `k_msgq` / `k_event` / `zbus`。
 4. 硬件描述方式：[设备树与驱动适配](/docs/porting/03_devicetree_and_driver) + [设备树速查](/docs/reference/06_devicetree_cheatsheet) —— 裸机时代的 `sfr` 地址映射，在这里是 DTS 节点 + `DT_` 宏。
 5. 配置方式：[Kconfig 速查](/docs/reference/05_kconfig_cheatsheet) —— 裸机时代的条件编译开关，在这里是 Kconfig 符号。
 
