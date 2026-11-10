@@ -14,6 +14,9 @@
     "10_optimization",
     "11_security",
     "12_kernel_source",
-    "13_community_contribution"
+    "13_async_messaging",
+    "14_userspace",
+    "15_object_lifecycle",
+    "16_community_contribution"
   ]
 }

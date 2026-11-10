@@ -121,6 +121,42 @@ screen /dev/ttyACM0 115200
 # 使用 PuTTY 或 Tera Term 连接到对应的 COM 口
 ```
 
+#### 无硬件路线：native_sim
+
+`native_sim` 把 Zephyr 应用编译成一个**原生 Linux 可执行文件**（POSIX 架构，不做任何特定硬件的模拟）。它是没有开发板时的最佳选择：启动即跑、可用 gdb 调试、支持 `CONFIG_ASAN`/`CONFIG_UBSAN` 内存检查，运行速度远快于指令级模拟：
+
+```bash
+cd ~/zephyrproject/zephyr/samples/hello_world
+
+# 为 native_sim 构建（32 位目标，模拟大多数嵌入式系统的 ILP32 ABI）
+west build -b native_sim
+
+# 直接运行产物（Linux 控制台应用，Ctrl+C 退出）
+./build/zephyr/zephyr.exe
+```
+
+**预期输出**：
+
+```
+*** Booting Zephyr OS build v3.7.0 ***
+Hello World! native_sim
+```
+
+64 位环境编译 32 位产物不便时，可用 `native_sim/native/64` 目标。
+
+**能力边界**（选择无硬件目标时对照）：
+
+| 需求 | native_sim | qemu_x86 |
+|------|-----------|----------|
+| 纯内核逻辑（线程/同步/队列/计时） | ✅ 全支持 | ✅ 全支持 |
+| 控制台输出 / 日志 / Shell | ✅ 重定向到进程 stdout | ✅ |
+| GPIO | ❌ 无驱动（需 `CONFIG_GPIO_EMUL` 模拟器） | ❌（同理） |
+| ADC / I2C / SPI / Flash / EEPROM | ⚠️ 有模拟器可用 | ⚠️ 视配置 |
+| ASAN / UBSAN / valgrind | ✅ | ❌ |
+
+:::tip[学习路径选择]
+纯内核与框架逻辑的学习（本教程第 5 章起的绝大多数实操）用 native_sim——快且可调试；涉及 GPIO/LED/按键的例程（如 blinky）需要真实开发板，或改用 `CONFIG_GPIO_EMUL` 模拟器验证逻辑；最终再上真实目标板。芯海 EC 平台的接入见 **开发指南** 与 **移植指南**。
+:::
 
 ### 串口输出查看
 
@@ -455,6 +491,10 @@ west build -b nrf52840dk_nrf52840
 # 烧录
 west flash
 ```
+
+:::note[无硬件替代]
+blinky 依赖 GPIO/LED，`native_sim` 与 `qemu_x86` 默认没有 GPIO 驱动，无法直接运行。两个选择：一是用真实开发板（推荐，效果直观）；二是在 native_sim 上启用 `CONFIG_GPIO_EMUL` 模拟器验证设备树与调用逻辑（看不见灯，但可从日志确认引脚电平变化）。理解设备树绑定与设备获取流程是本例的真正目标，硬件只是载体。
+:::
 
 **预期效果**:
 

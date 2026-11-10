@@ -1416,6 +1416,130 @@ zephyr_library_sources_ifdef(CONFIG_SHT3X sht3x.c)
 ```
 
 
+### 多实例驱动：DT_INST 宏族
+
+上面的 SHT3x 示例是**单实例**写法：设备树上只有一个 SHT3x 节点，驱动里写死一个 `struct device`。但真实系统很快会遇到"同一型号芯片挂 N 个"——两路温湿度、四路风扇转速计、双电池计。多实例驱动让一份驱动代码自动展开为 N 个设备实例，数量完全由设备树决定。
+
+#### 核心机制：DT_DRV_COMPAT + 实例编号
+
+多实例驱动的骨架由三个要素组成：
+
+1. **`DT_DRV_COMPAT`**：本文件驱动的 compatible 值（小写化、`-`→`_`），如 `sensirion,sht3x` → `sensirion_sht3x`
+2. **实例编号 `inst`**：devicetree 把所有状态 okay 的同 compatible 节点从 0 开始编号，宏族按编号取每个实例的属性
+3. **`DT_INST_FOREACH_STATUS_OKAY(fn)`**：对每个实例调用一次你的初始化宏 `fn(inst)`
+
+常用实例宏族（均来自 `devicetree.h`，v3.7）：
+
+| 宏 | 用途 |
+|----|------|
+| `DT_INST(inst, compat)` | 拿到实例 inst 的 node id |
+| `DT_DRV_INST(inst)` | 等价写法（依赖 DT_DRV_COMPAT） |
+| `DT_INST_PROP(inst, prop)` | 读实例属性，如寄存器地址 `reg` |
+| `DT_INST_NODE_HAS_PROP(inst, prop)` | 属性是否存在（可选属性判断） |
+| `DT_NUM_INST_STATUS_OKAY(compat)` | 状态 okay 的实例总数（容量规划） |
+| `DT_INST_FOREACH_STATUS_OKAY(fn)` | 对每个实例展开 `fn(inst)` |
+
+#### 双传感器实例的完整改造
+
+以 SHT3x 为例，从单实例改成多实例只需要三步：
+
+**第一步：设备树上写两个节点**
+
+```dts
+&i2c0 {
+    status = "okay";
+
+    sht3x_a: sht3x@44 {
+        compatible = "sensirion,sht3x";
+        reg = <0x44>;
+    };
+
+    sht3x_b: sht3x@45 {
+        compatible = "sensirion,sht3x";
+        reg = <0x45>;
+    };
+};
+```
+
+devicetree 自动给它们编实例号 0 和 1——驱动代码完全不需要知道。
+
+**第二步：驱动用实例宏取属性，数据/配置按实例号组织**
+
+```c
+#include <zephyr/device.h>
+#include <zephyr/drivers/i2c.h>
+#include <zephyr/devicetree.h>
+
+#define DT_DRV_COMPAT sensirion_sht3x
+
+struct sht3x_config {
+    struct i2c_dt_spec i2c;        /* 总线 + 地址，实例各异 */
+};
+
+struct sht3x_data {
+    int16_t last_temp;             /* 每实例独立状态 */
+};
+
+/* 每实例的初始化函数（共享代码，通过 dev->config 区分实例） */
+static int sht3x_init(const struct device *dev)
+{
+    const struct sht3x_config *cfg = dev->config;
+
+    if (!i2c_is_ready_dt(&cfg->i2c)) {
+        return -ENODEV;
+    }
+    LOG_INF("sht3x @ 0x%02x ready", cfg->i2c.addr);
+    return 0;
+}
+
+static const struct sensor_driver_api sht3x_api = {
+    .sample_fetch = sht3x_sample_fetch,
+    .channel_get  = sht3x_channel_get,
+};
+
+/* 每实例的展开体：数据、配置、设备对象 */
+#define SHT3X_INIT(inst)                                        \
+    static struct sht3x_data sht3x_data_##inst;                 \
+                                                                \
+    static const struct sht3x_config sht3x_config_##inst = {    \
+        .i2c = I2C_DT_SPEC_INST_GET(inst),                      \
+    };                                                          \
+                                                                \
+    DEVICE_DT_INST_DEFINE(inst, sht3x_init, NULL,               \
+                          &sht3x_data_##inst, &sht3x_config_##inst, \
+                          POST_KERNEL, CONFIG_SENSOR_INIT_PRIORITY, \
+                          &sht3x_api);
+
+/* ★ 一次展开 N 个实例：N 由设备树决定，代码零修改 */
+DT_INST_FOREACH_STATUS_OKAY(SHT3X_INIT)
+```
+
+关键点：
+
+- `I2C_DT_SPEC_INST_GET(inst)` 从实例节点自动取总线与 `reg` 地址，生成 `struct i2c_dt_spec`——地址不再手写
+- `DEVICE_DT_INST_DEFINE(inst, init_fn, pm, data, config, level, prio, api)` 与单实例的 `DEVICE_DT_DEFINE` 参数一致，只是 node id 换成实例编号
+- 实例间共享的只读内容（协议函数表 `sht3x_api`、命令常量）放全局；实例各异的内容（配置、状态）按 `inst` 后缀生成独立符号
+
+**第三步：应用侧按 DEVICE_DT_GET 取用**
+
+```c
+/* 应用代码：实例在设备树上的 label 就是设备名 */
+const struct device *sensor_a = DEVICE_DT_GET(DT_NODELABEL(sht3x_a));
+const struct device *sensor_b = DEVICE_DT_GET(DT_NODELABEL(sht3x_b));
+```
+
+#### 什么时候必须用多实例写法
+
+| 判断 | 结论 |
+|------|------|
+| 同 compatible 可能出现 ≥2 个节点（含未来板型） | **必须**多实例——单实例写法在第二个节点出现时直接编译冲突 |
+| 驱动将提交上游或跨项目复用 | **必须**——上游约定所有驱动支持多实例 |
+| 只有一个节点且永不增加（SoC 内部外设） | 单实例可接受，但写法成本相同，直接用实例写法更省心 |
+
+:::tip[多实例的心智模型]
+把驱动代码想成"类"，设备树节点想成"对象声明"：`DT_DRV_COMPAT` 声明类名，节点是实例，`DT_INST_*` 宏是取实例属性的构造函数参数，`DT_INST_FOREACH_STATUS_OKAY` 是批量 new。一旦接受这个模型，实例宏族的手法就从"神秘展开"变成普通的模板实例化。
+:::
+
 ### 示例 3：SPI Flash 驱动（简化版）
 
 这是一个 SPI Flash 驱动的简化示例，展示 SPI 驱动开发。

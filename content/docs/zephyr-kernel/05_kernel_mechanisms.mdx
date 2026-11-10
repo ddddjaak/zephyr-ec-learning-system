@@ -756,48 +756,137 @@ void good_isr(const void *arg)
 
 ### 3.6 工作队列（Work Queue）
 
-工作队列是另一种将 ISR 处理延迟到线程上下文的机制。
+工作队列是另一种将 ISR 处理延迟到线程上下文的机制：一个工作项（work item）绑定一个处理函数，提交到某个工作队列线程后异步执行。它比"信号量 + 专用线程"更轻——没有独立线程栈，多个工作项共享队列线程。
+
+#### 基本用法
 
 ```c
 #include <zephyr/kernel.h>
 
-// 定义工作项
-static struct k_work my_work;
+// 静态定义并初始化一个工作项（编译期完成，等价于 k_work_init）
+K_WORK_DEFINE(my_work, work_handler);
 
 // 工作处理函数（在工作队列线程中执行）
 void work_handler(struct k_work *work)
 {
     printk("工作队列：处理延迟任务\n");
-    
-    // 可以执行复杂操作
-    k_sleep(K_MSEC(100));
     process_complex_data();
 }
 
-// 中断服务例程
+// 中断服务例程：只做提交，处理全部延迟
 void isr_with_work(const void *arg)
 {
-    // 快速处理
-    read_hardware_data();
-    
-    // 提交工作到系统工作队列
-    k_work_submit(&my_work);
-}
-
-void setup_work_queue(void)
-{
-    // 初始化工作项
-    k_work_init(&my_work, work_handler);
-    
-    // 注册中断
-    IRQ_CONNECT(MY_IRQ_NUM, 2, isr_with_work, NULL, 0);
-    irq_enable(MY_IRQ_NUM);
+    read_hardware_data();          // 快速读取，存入静态缓冲
+    k_work_submit(&my_work);       // 提交到系统工作队列（ISR 安全）
 }
 ```
 
-:::tip[工作队列 vs 信号量+线程]
-- **工作队列**：适合一次性或偶尔的延迟处理，无需创建专用线程
-- **信号量+线程**：适合持续的、需要特定优先级的处理任务
+运行时定义（对象嵌在结构体里时）用 `k_work_init(&work, handler)`——注意只能在空闲状态下重新绑定处理函数。
+
+提交 API 与返回值（v3.7 语义）：`k_work_submit(work)` 提交到系统工作队列，`k_work_submit_to_queue(queue, work)` 提交到自建队列；返回 `0` 表示已在队列中（重复提交幂等）、`1` 表示新入队、`2` 表示正在运行且被重新排队。
+
+#### 系统工作队列：全系统共享的宝贵资源
+
+`k_work_submit` 提交到的是**系统工作队列**——一个全系统共享的工作队列线程，其属性由三个 Kconfig 决定：
+
+| Kconfig | 默认 | 说明 |
+|---------|------|------|
+| `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE` | 按平台 | 系统工作队列线程栈大小 |
+| `CONFIG_SYSTEM_WORKQUEUE_PRIORITY` | 按平台（通常较低优先级） | 队列线程优先级 |
+| `CONFIG_SYSTEM_WORKQUEUE_NO_YIELD` | n | 处理完每项后是否让出 CPU |
+
+:::danger[阻塞系统工作队列 = 全系统延迟]
+系统工作队列是全系统共享的：任何 handler 里的一次阻塞（睡眠、等锁、等 I2C 完成）都会让**排在后面的所有工作项全部延迟**——而队列里可能躺着 watchdog 喂狗、日志冲刷、其他模块的延迟处理。这是工作队列最常见、后果最重的误用。
+
+规则：
+- handler 中的等待一律用 `K_NO_WAIT` 尝试；资源忙就重新提交（resubmit）或改用延迟工作
+- 超过约 1ms 量级的处理，考虑专用线程或自建工作队列（注意：每个新工作队列线程都有实打实的栈成本，官方文档明确建议优先复用系统队列）
+:::
+
+#### Delayable Work：延迟与周期执行
+
+`k_work_delayable` 给工作项加一个到期时间，是"定时后台任务"的标准实现，替代手工起线程 + `k_sleep` 循环：
+
+```c
+#include <zephyr/kernel.h>
+
+// 静态定义可延迟工作项
+K_WORK_DELAYABLE_DEFINE(sampling_work, sampling_handler);
+
+void sampling_handler(struct k_work *work)
+{
+    struct k_work_delayable *dwork = k_work_delayable_from_work(work);
+
+    sample_all_sensors();
+
+    // 周期重排：schedule 语义下"已在等待中则不动"——见下方 schedule vs reschedule
+    k_work_reschedule(dwork, K_MSEC(500));
+}
+
+void sampling_start(void)
+{
+    k_work_schedule(&sampling_work, K_MSEC(500));   // 首次启动，500ms 后执行
+}
+
+void sampling_stop(void)
+{
+    k_work_cancel_delayable(&sampling_work);
+}
+```
+
+**`k_work_schedule` 与 `k_work_reschedule` 的语义差异**（v3.7 文档明确区分，选错就是 bug）：
+
+| API | 语义 | 典型用途 |
+|-----|------|---------|
+| `k_work_schedule(dwork, delay)` | **已等待/已入队则不动**（no-op，即使传 `K_NO_WAIT`） | "第一个未处理的数据生效"策略：高频触发源合并处理 |
+| `k_work_reschedule(dwork, delay)` | **无条件重置截止时间**（最后一拍生效） | 消抖：按键中断连续触发时只处理最后一次 |
+
+两者的队列版本为 `k_work_schedule_for_queue` / `k_work_reschedule_for_queue`。handler 内恢复 `k_work_delayable` 自身用 `k_work_delayable_from_work(work)`。
+
+#### 停机序列：cancel_sync 与 flush
+
+线程退出、模块反初始化时必须保证工作项不再执行，且正在执行的那一遍已经结束——否则工作项会引用已释放的资源：
+
+```c
+static struct k_work sync_work;
+
+void module_shutdown(void)
+{
+    struct k_work_sync sync;    // 必须在调用者栈上，且由调用者独占
+
+    /* 同步取消：返回 true 表示工作项原本不空闲（等待过） */
+    k_work_cancel_sync(&sync_work, &sync);
+
+    /* 或：等最后一遍执行完（期间允许重新提交） */
+    /* k_work_flush(&sync_work, &sync); */
+
+    /* 此后安全释放工作项引用的资源 */
+}
+```
+
+| API | 签名 | 语义 |
+|-----|------|------|
+| `k_work_cancel_sync` | `bool (struct k_work *work, struct k_work_sync *sync)` | 取消并等待到空闲；返回 true=原本不空闲。可延迟版本为 `k_work_cancel_delayable_sync` |
+| `k_work_flush` | `bool (struct k_work *work, struct k_work_sync *sync)` | 等最后一遍提交的实例执行完（线程上下文专用） |
+| `k_work_is_pending` | `bool (const struct k_work *work)` | 快照查询（ISR 安全，但只是快照） |
+| `k_work_busy_get` | `int (const struct k_work *work)` | 状态位图：`K_WORK_DELAYED`/`K_WORK_QUEUED`/`K_WORK_RUNNING`/`K_WORK_CANCELING`/`K_WORK_FLUSHING`，零即空闲 |
+
+:::warning[k_work_sync 的纪律]
+`struct k_work_sync` 必须持续存活到同步调用返回，且不能被两个线程并发复用。用局部变量一次一用即可。
+:::
+
+#### 常见死锁与优先级反转模式
+
+1. **handler 等锁、持锁者等队列**：handler 用阻塞锁，而锁被一个低优先级线程持有且该线程正在等待系统工作队列空闲——系统工作队列被自己等的东西堵死。对策：handler 内一律 `K_NO_WAIT` 拿锁，拿不到就重新提交延迟重试。
+2. **handler 内提交并等待**：handler A 提交工作项 B 然后 `k_work_flush(B)`——如果两者都在系统工作队列上，B 永远排在 A 后面，flush 死等。对策：flush/cancel_sync 只在工作队列**之外**的线程（退出序列）调用。
+3. **忘了检查提交返回值**：向已排满的自建队列提交返回 `-EBUSY`，任务悄悄丢失。官方文档点名"未检查返回值的 submit/cancel 造成了真实的竞态事故"——每次提交的返回值要么检查，要么明确接受丢失语义。
+4. **用 pending 预判代替提交**：`if (!k_work_is_pending(w)) k_work_submit(w);` 在并发下有竞态窗口（快照过期），可能漏提交。官方建议：**来了就直接提交**，队列本身幂等去重。
+
+:::tip[工作队列 vs 专用线程 vs 延迟工作]
+- **`k_work_submit`（系统队列）**：轻量、一次性、无阻塞的延迟处理（ISR 后半段、状态更新）
+- **`k_work_schedule/reschedule`（delayable）**：定时/周期/消抖任务，替代"线程 + k_sleep 循环"
+- **专用线程**：持续运行、需要独立栈深度与优先级保证的处理循环（如协议解析主循环）
+- 自建 `k_work_q` 仅当 handler 确需阻塞且不想新建完整线程逻辑时使用，注意其栈成本
 :::
 
 ## 4. 线程间通信

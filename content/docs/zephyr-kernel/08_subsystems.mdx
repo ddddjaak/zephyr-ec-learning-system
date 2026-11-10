@@ -743,6 +743,136 @@ void nvs_example(void)
 - 在写入前验证数据有效性
 :::
 
+### Settings 子系统：结构化的参数存储
+
+上一节的 NVS 提供的是"裸键值"：你管理 16 位 ID、自己设计布局、自己处理校验。当参数多了以后，这套手工管理会膨胀成事实上的自研配置框架。Zephyr 的 **settings 子系统**在存储后端之上提供了一层标准化封装：
+
+- **路径式键名**：`"module/name"` 层级命名（如 `"batt/low_threshold"`），每模块只认自己的子树
+- **后端无关**：同一套 API 可跑在 NVS、FCB、文件系统上，换后端不改业务代码
+- **处理器注册制**：每模块注册一个 handler，加载/保存自动路由到正确的模块
+
+#### 初始化与后端
+
+```ini
+# prj.conf
+CONFIG_SETTINGS=y            # 启用 settings 子系统
+CONFIG_SETTINGS_NVS=y        # 使用 NVS 作为持久化后端（复用上一节的 NVS 分区）
+```
+
+```c
+#include <zephyr/settings/settings.h>
+
+void storage_init(void)
+{
+    int rc = settings_subsys_init();    /* 初始化子系统 + 打开后端 */
+    if (rc != 0) {
+        LOG_ERR("settings init failed: %d", rc);
+    }
+}
+```
+
+后端切换就是改一个 Kconfig（`CONFIG_SETTINGS_NVS` / `CONFIG_SETTINGS_FCB` / `CONFIG_SETTINGS_FS`），前提是设备树上已有对应存储分区。文件系统后端要求先挂载 FS 再调用 `settings_subsys_init()`；NVS 后端无此限制。
+
+#### 注册处理器：模块只管自己的子树
+
+静态注册（推荐，编译期完成）：
+
+```c
+#include <zephyr/settings/settings.h>
+
+static uint32_t batt_low_threshold = 3200;   /* mV */
+
+/* h_set：从存储加载时被回调，key 是去掉子树前缀的剩余部分 */
+static int batt_settings_set(const char *key, size_t len,
+                             settings_read_cb read_cb, void *cb_arg)
+{
+    const char *next;
+
+    if (settings_name_steq(key, "low_threshold", &next) && !next) {
+        if (len != sizeof(batt_low_threshold)) {
+            return -EINVAL;
+        }
+        return read_cb(cb_arg, &batt_low_threshold, sizeof(batt_low_threshold));
+    }
+
+    return -ENOENT;    /* 未识别的键：交给下一个 handler 或忽略 */
+}
+
+/* h_export：保存（settings_save / commit 导出）时被回调，逐键写回 */
+static int batt_settings_export(int (*export_func)(const char *name,
+                                                   const void *val,
+                                                   size_t val_len))
+{
+    return export_func("batt/low_threshold",
+                       &batt_low_threshold, sizeof(batt_low_threshold));
+}
+
+/* commit：全量加载完成后回调——在此做一致性校验（所有参数到齐了吗？） */
+static int batt_settings_commit(void)
+{
+    LOG_INF("battery settings committed: %u mV", batt_low_threshold);
+    return 0;
+}
+
+SETTINGS_STATIC_HANDLER_DEFINE(batt, "batt",
+                               NULL,               /* h_get：运行时读，可先不实现 */
+                               batt_settings_set,
+                               batt_settings_commit,
+                               batt_settings_export);
+```
+
+动态注册（对象内嵌 handler、运行时挂接）用 `settings_register(struct settings_handler *cf)`，回调签名相同。
+
+#### 加载、保存与运行时访问
+
+```c
+void batt_config_load(void)
+{
+    settings_load();          /* 全量加载：遍历后端，逐键路由到各模块 h_set */
+}
+
+void batt_config_save_threshold(void)
+{
+    /* 单键保存：值变化才写入（后端自动判断） */
+    settings_save_one("batt/low_threshold",
+                      &batt_low_threshold, sizeof(batt_low_threshold));
+}
+
+void batt_config_delete_threshold(void)
+{
+    settings_delete("batt/low_threshold");   /* 删除 = 写入 NULL 值 */
+}
+```
+
+键名规则：`/` 分隔、最深 8 层、最长 64 字符（`SETTINGS_MAX_NAME_LEN`）。启用 `CONFIG_SETTINGS_RUNTIME` 后还可用 `settings_runtime_set/get/commit` 从代码外部（如 shell、通信协议）按完整键名读写参数——这让"运行时调参"无需自研协议。
+
+#### Shell 直通调试
+
+```ini
+CONFIG_SETTINGS_SHELL=y
+```
+
+```bash
+uart:~$ settings list                 # 列出所有已注册键
+uart:~$ settings get batt/low_threshold
+uart:~$ settings set batt/low_threshold 3000
+```
+
+#### NVS 直用 vs settings：怎么选
+
+| 维度 | NVS 直用 | settings 子系统 |
+|------|---------|----------------|
+| 布局设计 | 自己定 ID 与格式 | 键名路径制，模块自治 |
+| 加载流程 | 自己写 for 循环读每个键 | `settings_load()` 一次全量路由 |
+| 后端迁移 | 重写存储层 | 改 Kconfig |
+| 运行时调参 | 自研协议 | `settings_runtime_*` + shell |
+| Footprint | 最小 | 多一层抽象 |
+| 适用 | 个位数参数、极简场景 | 参数量增长、多模块、需要调试调参的正式产品 |
+
+:::tip[EC 固件的建议]
+校准系数、阈值、序列号这类"正式配置参数"，从第一个模块开始就用 settings——迁移成本远低于日后把散落的 NVS 读写代码收拢。NVS 直用保留给 settings 覆盖不了的场景：大块二进制（日志镜像、签名校验数据）。
+:::
+
 ### 存储性能优化
 
 #### 磨损均衡
