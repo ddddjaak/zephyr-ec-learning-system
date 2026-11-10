@@ -6,6 +6,97 @@ description: 电源与唤醒管理——系统电源状态、电源序列控制�
 
 EC 负责系统全局的电源状态控制与协调，从上电到关机全过程的电源序列管理。
 
+## Zephyr 机制基础：PM 框架、唤醒源与工作队列
+
+EC 的电源与唤醒管理踩在 Zephyr 内核四类机制上：电源管理框架（`CONFIG_PM` / `CONFIG_PM_DEVICE`）、唤醒源、`k_event` 状态协调、`k_work` 提交唤醒处理。先看上游提供了什么，再看 EC 怎么用。
+
+**电源管理框架**：Zephyr 内置两级 PM。系统级 PM（`CONFIG_PM=y`）由内核 idle 线程在系统空闲时介入，依据下一个到期定时器和唤醒约束，决定是否进入某个系统电源状态（如 suspend-to-idle），也允许应用调用 `pm_state_force()` 强制切换（本页下文 EC 的浅睡眠即此用法）；设备级 PM（`CONFIG_PM_DEVICE=y`）让每个驱动实现 suspend/resume 功耗动作，系统进出低功耗时逐一通知设备。低功耗框架的完整讲解见 [内核子系统：低功耗管理](/docs/zephyr-kernel/08_subsystems)。
+
+**唤醒源**：低功耗状态下仍保持供电与中断使能、能触发唤醒的外设/信号。Zephyr 进入低功耗前会核对唤醒约束：允许唤醒的外设保持中断使能，其余外设 suspend。对 EC 的映射非常直接——电源键、LID、RTC、AC 检测是"必须常开"的唤醒源，温度传感器、风扇反馈则在进入低功耗前屏蔽。
+
+**k_event 状态协调**：电源状态转换天然是"一处决策、多方响应"——pwrseq 决定状态后用 `k_event_post()` 广播状态位，charger、LED 等子系统各自 `k_event_wait()` 等待自己的位子集，彼此零依赖。
+
+**k_work 提交唤醒处理**：唤醒源中断（如电源键 GPIO 回调）在 ISR 上下文触发，不能在里面执行上电时序这类耗时动作。标准做法是 ISR 中 `k_work_submit()` 把处理函数提交到系统 workqueue 线程执行；需要消抖的信号用 `K_WORK_DELAYABLE_DEFINE` + `k_work_reschedule()`（无条件重置截止时间）。注意 work handler 在系统 workqueue 线程上下文执行，内部禁止阻塞。
+
+### 核心 API 一览
+
+| 机制 | API / 配置 | 说明 |
+|------|-----------|------|
+| PM 框架 | `CONFIG_PM` | 系统级电源管理（idle 状态决策、`pm_state_force()`） |
+| PM 框架 | `CONFIG_PM_DEVICE` | 设备级 suspend/resume 功耗动作 |
+| 事件位 | `K_EVENT_DEFINE(name)` / `k_event_init(event)` | 静态定义 / 运行期初始化事件对象 |
+| 事件位 | `k_event_post(event, mask)` | 置位广播，线程与 ISR 均可调用 |
+| 事件位 | `k_event_wait(event, events, wait_all, timeout)` | 等待位子集，返回命中位图或 0 |
+| 工作队列 | `K_WORK_DEFINE(work, handler)` + `k_work_submit(work)` | 提交到系统 workqueue 线程执行 |
+| 工作队列 | `K_WORK_DELAYABLE_DEFINE(work, handler)` + `k_work_schedule(dwork, delay)` | 可延时提交；已 pending 则 no-op |
+| 工作队列 | `k_work_reschedule(dwork, delay)` | 无条件重置截止时间（消抖） |
+| 工作队列 | `k_work_cancel_sync(work, &sync)` / `k_work_flush(work, &sync)` | 同步取消 / 等待完成，返回 bool |
+| 工作队列 | `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE` | 系统 workqueue 栈大小，唤醒路径长时需加大 |
+
+### 陷阱清单
+
+:::danger[work handler 内禁止阻塞]
+`k_work_submit()` 提交的 handler 在系统 workqueue 线程执行，所有已提交的工作共享这一个线程。handler 里 `k_msleep()`、等锁、等事件，会拖慢队列里所有其他工作。
+:::
+
+:::warning[schedule 是 no-op，消抖要用 reschedule]
+`k_work_schedule()` 对已 pending 的 delayable work 不做任何事；按键消抖这类"每次触发重新计时"的场景必须用 `k_work_reschedule()`（无条件重置截止时间）。
+:::
+
+:::warning[ISR 里只做投递]
+唤醒源中断回调在 ISR 上下文执行：只能 `K_NO_WAIT`，只能做 `k_work_submit()` / `k_event_post()` / `k_sem_give()` 这类非阻塞投递，唤醒序列本身留给线程。
+:::
+
+### 最小示例：中断 → 工作队列 → 事件（native_sim 可跑）
+
+定时器 expiry 回调（ISR 上下文）模拟电源键中断：ISR 提交 work，work 处理函数 post 事件位，监控线程等事件后执行唤醒动作：
+
+```c
+#include <zephyr/kernel.h>
+
+K_EVENT_DEFINE(pwr_events);
+#define EVT_PWRBTN BIT(0)
+
+static void wakeup_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work); /* workqueue 线程上下文：保持简短、不阻塞 */
+    k_event_post(&pwr_events, EVT_PWRBTN);
+}
+K_WORK_DEFINE(wakeup_work, wakeup_work_handler);
+
+/* 定时器 expiry 回调在 ISR 上下文执行，模拟电源键中断 */
+static void pwrbtn_isr_sim(struct k_timer *t)
+{
+    ARG_UNUSED(t);
+    k_work_submit(&wakeup_work); /* ISR 中只做投递 */
+}
+K_TIMER_DEFINE(pwrbtn_sim, pwrbtn_isr_sim, NULL);
+
+static void pm_monitor(void *p1, void *p2, void *p3)
+{
+    while (true) {
+        uint32_t ev = k_event_wait(&pwr_events, EVT_PWRBTN, false, K_FOREVER);
+        if (ev & EVT_PWRBTN) {
+            printk("wakeup: run power-on sequence\n");
+        }
+    }
+}
+K_THREAD_DEFINE(pm_tid, 1024, pm_monitor, NULL, NULL, NULL, 5, 0, 0);
+
+int main(void)
+{
+    k_timer_start(&pwrbtn_sim, K_MSEC(50), K_MSEC(500));
+    return 0;
+}
+```
+
+```bash
+west build -b native_sim
+./build/zephyr/zephyr.exe
+```
+
+> 深入阅读：系统级/设备级低功耗框架全景见 [内核子系统：低功耗管理](/docs/zephyr-kernel/08_subsystems)；workqueue 与中断交互见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+
 ## 系统电源状态
 
 根据 ACPI 规范，系统电源状态分为：
@@ -23,6 +114,10 @@ EC 在各状态转换中的典型动作：
 - S0 → S3 睡眠：主机发送 SUSPEND# 信号 → EC 关闭非关键电源轨（LCD、风扇、背光） → 进入低功耗模式 → 上报 `EC_EVENT_SYSTEM_S0_S3`
 - S3 → S0 唤醒：检测唤醒源事件 → 重新开启电源轨并恢复外设 → 上报 `EC_EVENT_SYSTEM_S3_S0`
 - S0 → S5 关机：响应主机关机命令或长按电源键 → 执行有序掉电 → 保留 RTC 和键盘唤醒能力 → 上报 `EC_EVENT_SYSTEM_S0_S5`
+
+:::note[上游对应]
+`EC_EVENT_SYSTEM_*` 状态上报对应 Zephyr `k_event` 事件位：`k_event_post()` 广播、`k_event_wait()` 等待，"一处决策、多方响应"来自内核事件对象的语义（见 [内核机制：事件](/docs/zephyr-kernel/05_kernel_mechanisms)）。
+:::
 
 ## 电源序列控制
 
@@ -53,6 +148,10 @@ void pwrseq_thread(void *p1, void *p2, void *p3)
     }
 }
 ```
+
+:::note[上游对应]
+pwrseq 线程即 `K_THREAD_DEFINE` 静态线程 + `k_msleep` 周期轮询；`g_pwrflags` 这类请求标志集合在 Zephyr 中惯用 `k_event` 位掩码表达（本页的 `EC_EVENT_*` 就是此用法），见 [内核机制：线程管理](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
 
 `monitor_power_signal()` 中通过 eSPI Virtual Wire 获取 SLP_S3/SLP_S4 信号，根据当前电源状态和信号组合决定是否进行状态切换。
 
@@ -88,5 +187,13 @@ static int pwrbtn_init(void)
 }
 ```
 
+:::note[上游对应]
+GPIO 中断回调在 ISR 上下文执行，其中 `k_event_post()` 是非阻塞的信号投递；更耗时的唤醒处理应改为 `k_work_submit()` 交给系统 workqueue（见 [内核机制：工作队列](/docs/zephyr-kernel/05_kernel_mechanisms)）。
+:::
+
 低功耗策略：在 S3/S5 下屏蔽非关键中断（温度传感器、风扇反馈等），仅保留唤醒信号（电源键、LID、RTC）；EC 可通过 `pm_state_force(0, &info)` 强制进入浅睡眠模式（`info` 为 `struct pm_state_info`，指定目标状态如 `PM_STATE_SUSPEND_TO_IDLE`，需包含 `zephyr/pm/pm.h`）。
+
+:::note[上游对应]
+`pm_state_force()` 属 Zephyr 电源管理框架（`CONFIG_PM`）的强制状态切换入口；系统级/设备级 PM 框架全景见 [内核子系统：低功耗管理](/docs/zephyr-kernel/08_subsystems)。
+:::
 

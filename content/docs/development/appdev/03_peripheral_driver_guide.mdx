@@ -6,6 +6,114 @@ description: 外设驱动使用指南——GPIO/I2C/SPI/UART/ADC 的高频调用
 
 本节以代码片段形式展示 EC 开发中最常用的外设驱动模式。所有驱动均基于 Zephyr 设备树绑定硬件资源，通过 `DEVICE_DT_GET()` 获取设备实例。
 
+## Zephyr 机制基础：struct device 与设备驱动模型
+
+Zephyr 中每个"外设"都是一个 `struct device` 实例：启用（`status = "okay"`）的设备树节点在编译期由 `DEVICE_DT_*` 宏生成 device 对象，内含名称、`api` 函数表指针、config/data 指针与状态。应用拿到的不是某个驱动的私有句柄，而是统一的 `struct device *`；`i2c_write_read()`、`gpio_pin_configure_dt()` 这类 API 内部就是通过 `dev->api` 分发到具体驱动实现。`GPIO_DT_SPEC_GET` 等宏则产出 `{dev, pin, flags}` 描述符（如 `struct gpio_dt_spec`），配合 `*_dt()` 后缀 API 把"设备 + 引脚 + 极性"收敛到一处。
+
+实例获取与多实例驱动：`DEVICE_DT_GET(DT_NODELABEL(label))` 在编译期解析节点、链接期绑定 device 实例——若节点未启用或驱动未编译，直接链接报错，把接线错误提前到构建期。写自己的驱动时，`DT_DRV_COMPAT` 声明驱动兼容的 binding，`DEVICE_DT_INST_DEFINE(inst, init_fn, pm, data, config, level, prio, api)` 为每个实例生成 device，`DT_INST_FOREACH_STATUS_OKAY(fn)` 遍历所有启用实例展开宏；`level` / `prio` 决定 init 在内核启动序列（`PRE_KERNEL_1/2` → `POST_KERNEL` → `APPLICATION`）中的执行位置。
+
+| 宏 / API | 签名 | 说明 |
+|----------|------|------|
+| `DEVICE_DT_GET` | `DEVICE_DT_GET(DT_NODELABEL(label))` | 编译期按节点标签取 device 实例 |
+| `DEVICE_DT_INST_DEFINE` | `DEVICE_DT_INST_DEFINE(inst, init_fn, pm, data, config, level, prio, api)` | 驱动侧为实例定义设备 |
+| `DT_DRV_COMPAT` | `#define DT_DRV_COMPAT vnd_dummy_sensor` | 声明驱动兼容的 binding 名 |
+| `DT_INST_FOREACH_STATUS_OKAY` | `DT_INST_FOREACH_STATUS_OKAY(fn)` | 对每个启用实例展开 fn |
+| `I2C_DT_SPEC_INST_GET` | `I2C_DT_SPEC_INST_GET(inst)` | 从实例节点取 I2C 描述符 |
+| `i2c_is_ready_dt` | `i2c_is_ready_dt(spec)` | 检查 I2C 描述符对应设备是否就绪 |
+
+:::danger
+`DEVICE_DT_GET()` 在节点 `status` 不是 `"okay"` 或对应驱动没有编译进固件时是链接期错误（undefined reference）——先核对 DTS status 与对应 `CONFIG_*` 开关，而不是运行期才发现拿不到设备。
+:::
+
+:::warning
+使用设备前先做就绪检查（如 `i2c_is_ready_dt()`）。GPIO 回调这类驱动回调运行在驱动中断上下文：回调内禁止阻塞，需要信号量时只能 `K_NO_WAIT`。
+:::
+
+:::success
+优先使用 `*_dt()` 描述符 API（`GPIO_DT_SPEC_GET` + `gpio_pin_configure_dt`、`I2C_DT_SPEC_INST_GET` + i2c 系列），设备与引脚绑定集中在定义处，避免 device 指针与引脚号手写错配。
+:::
+
+最小可跑示例（native_sim）：定义一个两实例的"虚拟传感器"驱动，只依赖驱动模型本身、不碰任何真实硬件。应用目录会自动加入 `DTS_ROOT`，自定义 binding 放在 `dts/bindings/` 下即可被发现：
+
+```
+app/
+├── CMakeLists.txt                     # 见下方
+├── prj.conf
+├── dts/bindings/vnd,dummy-sensor.yaml
+├── boards/native_sim.overlay          # 实例化两个节点
+└── src/dummy_sensor.c
+```
+
+```cmake
+cmake_minimum_required(VERSION 3.20.0)
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(dummy_sensor_demo)
+target_sources(app PRIVATE src/dummy_sensor.c)
+```
+
+`dts/bindings/vnd,dummy-sensor.yaml`：
+
+```yaml
+description: Demo dummy sensor
+
+compatible: "vnd,dummy-sensor"
+
+include: base.yaml
+```
+
+`boards/native_sim.overlay`：
+
+```dts
+/ {
+    dummy_sensor0: dummy-sensor-0 {
+        compatible = "vnd,dummy-sensor";
+        status = "okay";
+    };
+
+    dummy_sensor1: dummy-sensor-1 {
+        compatible = "vnd,dummy-sensor";
+        status = "okay";
+    };
+};
+```
+
+`src/dummy_sensor.c`：
+
+```c
+#define DT_DRV_COMPAT vnd_dummy_sensor
+
+#include <zephyr/device.h>
+#include <zephyr/init.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(dummy, LOG_LEVEL_INF);
+
+static int dummy_init(const struct device *dev)
+{
+    LOG_INF("%s initialized", dev->name);
+    return 0;
+}
+
+/* 每个状态为 okay 的实例各生成一个 struct device，
+   init 在 POST_KERNEL 级按 prio 顺序执行 */
+#define DUMMY_INIT(inst)                                \
+    DEVICE_DT_INST_DEFINE(inst, dummy_init, NULL, NULL, \
+                          NULL, POST_KERNEL, 50, NULL)
+
+DT_INST_FOREACH_STATUS_OKAY(DUMMY_INIT)
+```
+
+`prj.conf` 只需 `CONFIG_LOG=y`，构建与运行：
+
+```bash
+west build -b native_sim
+./build/zephyr/zephyr.exe
+```
+
+启动日志会出现两条 `dummy-sensor-0/1 initialized`，说明两个实例各自完成了 device 绑定与 init 调度。想在 native_sim 上跑上文 GPIO 示例，需 `CONFIG_GPIO=y` 并打开 GPIO 模拟（`CONFIG_GPIO_EMUL`）。
+
+深入阅读：`struct device`、驱动 api 结构体、初始化级别与 DT_INST 多实例写法详见 [设备驱动模型](/docs/zephyr-kernel/07_driver_model)；GPIO 回调与 ISR / workqueue 的上下文分工见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；配置项与设备树节点的配合关系见 [Kconfig 配置系统深入](/docs/zephyr-kernel/06_config_system)。
+
 ## GPIO
 
 设备树定义（在板级 `.dts` 或 overlay 中）——LED 类节点需放在 `compatible = "gpio-leds"` 的父节点下才会绑定标准 binding：
@@ -69,6 +177,10 @@ void init_button(void)
     gpio_add_callback(button.port, &button_cb_data);
 }
 ```
+
+:::note[上游对应]
+`gpio_init_callback()` 注册的回调运行在 GPIO 驱动的中断上下文，ISR 与底半部（workqueue）的分工见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
 
 ## I2C / SPI / UART
 
@@ -174,5 +286,13 @@ Zephyr 通过 pinctrl 系统解耦引脚配置与驱动代码。DTS 中声明引
 
 整体数据流为：DTS pinctrl 节点 → Zephyr pinctrl 驱动解析 → HAL 写寄存器 → 引脚模式生效。开发者只需在 DTS 中声明功能需求，无需关心寄存器地址和位偏移。
 
+:::note[上游对应]
+pinctrl 属 Zephyr 设备树体系（节点 + binding 描述引脚功能），设备树与 Kconfig 的分工见 [Kconfig 配置系统深入](/docs/zephyr-kernel/06_config_system)。
+:::
+
 > Zephyr 设备驱动模型（struct device、驱动注册级别、DEVICE_DT_DEFINE 宏等）的详细原理请参考 [Zephyr 官方设备驱动文档](https://docs.zephyrproject.org/latest/kernel/drivers/index.html)。EC 开发中日常使用的就是上述 API 模式，掌握这些即可应对绝大多数场景。
+
+:::note[上游对应]
+`DEVICE_DT_DEFINE` 与初始化级别是驱动注册的上游机制，驱动侧写法（含 DT_INST 多实例）详见 [设备驱动模型](/docs/zephyr-kernel/07_driver_model)。
+:::
 

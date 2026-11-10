@@ -3,6 +3,68 @@ title: Kconfig 配置系统
 description: Kconfig 配置系统——语法、日志/Shell/OTA 实际配置、优先级与自定义 Kconfig
 ---
 
+## Zephyr 机制基础：CONFIG_* 命名空间与覆盖链
+
+`CONFIG_*` 不是本方案的发明，而是 Zephyr Kconfig 系统的全局命名空间：每份 Kconfig 文件中的 `config XXX` 定义一个配置项，Kconfig 解析器按 `depends on`、`select`、`default`、`range` 求解依赖后得到最终值，再转成 `autoconf.h` 中的 C 宏（如 `#define CONFIG_LOG 1`）。无论上游的 `CONFIG_I2C`，还是本方案的 `CONFIG_CSCE250X_*` 芯片定制开关，都遵循同一套命名、依赖与覆盖规则。
+
+覆盖链从低到高依次为：Kconfig 文件中的 `default` → 板级 defconfig → `prj.conf` → `-DEXTRA_CONF_FILE=` 叠加层 → 命令行 `-D`。`menuconfig` / `guiconfig` 只是链路末端 `.config` 的交互式编辑器，保存后仍走"生成 `.config` → 转出 `autoconf.h`"的流程。
+
+常用上游配置项速查（均可直接写进 prj.conf）：
+
+| 配置项 | 作用 |
+|--------|------|
+| `CONFIG_LOG` / `CONFIG_LOG_DEFAULT_LEVEL` | 日志子系统开关与默认级别 |
+| `CONFIG_SHELL` | 交互式 shell |
+| `CONFIG_PM` / `CONFIG_PM_DEVICE` | 系统低功耗 / 设备运行时电源管理 |
+| `CONFIG_I2C` | I2C 驱动子系统 |
+| `CONFIG_UART_CONSOLE` | UART 控制台 |
+| `CONFIG_THREAD_STACK_INFO` | 记录线程栈信息（栈测量、溢出分析依赖它） |
+| `CONFIG_INIT_STACKS` | 栈填充初始化（配合统计栈使用量） |
+| `CONFIG_SETTINGS` / `CONFIG_SETTINGS_NVS` / `CONFIG_SETTINGS_SHELL` | 设置子系统、NVS 后端与 shell 命令 |
+
+:::danger
+`CONFIG_XXX=y` 在依赖不满足时会被静默忽略——Kconfig 按 `depends on` 求解，条件不成立则该项保持 `n`。配置"不生效"时先查 `build/zephyr/.config` 与依赖链，而不是反复改 prj.conf。
+:::
+
+:::warning
+`select` 会强制打开被选项及其依赖，容易连带引入意料之外的组件；EC 模块 Kconfig 优先用 `depends on` 表达依赖，把启用权留给使用者。
+:::
+
+:::success
+命令行 `west build -DCONFIG_LOG=y` 优先级最高，适合临时验证；确认有效后应回落到 prj.conf，避免配置散落、不可复现。
+:::
+
+最小可跑示例（native_sim）：自定义一个 string 配置项并在应用中消费。应用自带 `Kconfig` 时必须 `source "Kconfig.zephyr"` 把上游配置树挂进来。
+
+```kconfig
+mainmenu "Kconfig demo"
+
+config DEMO_GREETING
+    string "Greeting printed at boot"
+    default "hello from kconfig"
+
+source "Kconfig.zephyr"
+```
+
+`main.c`：
+
+```c
+#include <zephyr/kernel.h>
+
+int main(void)
+{
+    printk("%s\n", CONFIG_DEMO_GREETING);
+    return 0;
+}
+```
+
+```bash
+west build -b native_sim
+./build/zephyr/zephyr.exe
+```
+
+深入阅读：Kconfig 语法、设备树分工与覆盖链细节见 [Kconfig 配置系统深入](/docs/zephyr-kernel/06_config_system)；`CONFIG_LOG` / `CONFIG_SHELL` / `CONFIG_SETTINGS` 背后的子系统用法见 [子系统](/docs/zephyr-kernel/08_subsystems)。
+
 ## Kconfig 配置系统
 
 Kconfig 是控制功能启用、驱动选择、编译参数的核心机制。配合 `prj.conf` 等配置文件，可以灵活裁剪系统。日常开发中，`prj.conf` 是最常修改的文件。
@@ -27,6 +89,10 @@ config UART_CONSOLE
 | `default y` | 默认值 |
 | `help` | 详细描述 |
 
+:::note[上游对应]
+`CONFIG_*` 是 Zephyr Kconfig 系统的全局命名空间，本方案的模块开关同样遵循其命名与依赖规则，详见 [Kconfig 配置系统深入](/docs/zephyr-kernel/06_config_system)。
+:::
+
 ### 驱动、设备树与 Kconfig 的关系
 
 ![图 3-1](/media/image4.png)
@@ -35,6 +101,10 @@ config UART_CONSOLE
 - 设备树（DTS）：决定驱动初始化时的硬件参数（地址、引脚、速率等）；
 - 驱动：编译进内核后在系统中注册设备实例，供应用层调用；
 - 应用程序：通过设备名称查找设备实例，调用 API 操作硬件。
+
+:::note[上游对应]
+Kconfig 与设备树是两条正交的配置通道（软件开关 vs 硬件描述），设备树与 binding 细节见 [Kconfig 配置系统深入](/docs/zephyr-kernel/06_config_system)。
+:::
 
 ### 配置文件的组织
 
@@ -65,6 +135,10 @@ CONFIG_SHELL_BACKEND_SERIAL=y
 CONFIG_OTA_UPDATE=y
 CONFIG_OTA_BUFFER_SIZE=1024
 ```
+
+:::note[上游对应]
+`CONFIG_LOG` / `CONFIG_SHELL` 背后是 Zephyr 日志与 shell 子系统，使用方式见 [子系统](/docs/zephyr-kernel/08_subsystems)。
+:::
 
 ### 配置生效流程
 
@@ -103,6 +177,10 @@ west build -t guiconfig
 ```
 
 这会启动类似 Linux 内核的菜单界面，可手动启用或关闭配置项，退出时修改写回 `.config`。
+
+:::note[上游对应]
+menuconfig 本质是 `.config` 的交互式编辑器，保存后仍走"生成 `.config` → 转出 `autoconf.h`"的链路，细节见 [Kconfig 配置系统深入](/docs/zephyr-kernel/06_config_system)。
+:::
 
 ![图 3-2](/media/image5.png)
 

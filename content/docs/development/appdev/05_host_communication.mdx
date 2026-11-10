@@ -6,6 +6,105 @@ description: 主机通信——通信接口、命令处理流程与共享内存�
 
 EC 通过 LPC 或 eSPI 接口与主机（BIOS/OS）通信，实现命令交互、事件上报与状态同步。
 
+## Zephyr 机制基础：命令分发、共享内存与线程优先级
+
+主机通信的内核底座由三类机制构成：`k_msgq` 命令分发、共享内存一致性、线程优先级设计。分清"哪些是 Zephyr 提供的、哪些是芯片定制"，是读懂本页的前提。
+
+**k_msgq 命令分发**：经典的主机命令处理是"ISR 卸载"模型——中断回调只做最小工作（读端口字节、组装命令帧），随即 `k_msgq_put()` 投递到命令队列；主机通信线程用 `k_msgq_get(K_FOREVER)` 阻塞等待，取出后按命令字查表分发。ISR 短平快，协议解析的长路径全部移到线程上下文，中断延迟不再受命令复杂度影响。队列满时 `k_msgq_put()` 返回 `-EAGAIN`，命令类消息绝不能静默丢弃。
+
+**共享内存一致性**：EC 与 Host 访问同一块物理内存，一致性问题分两层。**EC↔Host 层**靠约定布局与更新顺序保证：先写数据体、后写版本号/有效标志，Host 只认"标志翻转之后的完整帧"。**EC 内部层**（多个 EC 线程读写同一窗口）用内核同步原语保护：最好固定单一属主线程；确需多线程访问时用 `K_MUTEX_DEFINE` + `k_mutex_lock()`——Zephyr 互斥锁带优先级继承，可缓解优先级反转。
+
+**线程优先级设计**：Zephyr 优先级数值越小抢占能力越强（协程线程用负优先级，可抢占线程用 0 及正优先级）。主机通信线程通常取中高优先级：高于电池监控、日志等后台任务（保证命令响应延迟），低于电源时序这类硬时限任务（电源序列错一步就是掉电）。
+
+### 核心 API 一览
+
+| 原语 | API | 说明 |
+|------|-----|------|
+| 消息队列 | `K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` | 编译期定义定长命令队列 |
+| 消息队列 | `k_msgq_put(msgq, data, timeout)` | 投递消息，队列满返回 `-EAGAIN` |
+| 消息队列 | `k_msgq_get(msgq, data, timeout)` | 取出消息，可阻塞等待 |
+| 消息队列 | `k_msgq_purge(msgq)` / `k_msgq_num_used_get(msgq)` | 清空队列 / 查询积压深度 |
+| 互斥锁 | `K_MUTEX_DEFINE(name)` | 编译期定义互斥锁（带优先级继承） |
+| 互斥锁 | `k_mutex_lock(mutex, timeout)` | 加锁保护共享窗口的整段读写 |
+| 信号量 | `K_SEM_DEFINE(name, initial, limit)` / `k_sem_give(sem)` / `k_sem_take(sem, timeout)` | ISR 用 give 发"有命令"信号，线程 take 后处理（ISR 中 take 只能 `K_NO_WAIT`） |
+| 超时 | `K_NO_WAIT` / `K_FOREVER` / `K_MSEC(ms)` | 阻塞 API 的超时语义；ISR 中只能 `K_NO_WAIT` |
+
+### 陷阱清单
+
+:::danger[ISR 上下文不能阻塞]
+中断回调里收主机字节，只能调用无阻塞版本：超时参数传 `K_NO_WAIT`（或仅 `k_sem_give()` / `k_event_post()` 发信号）。在 ISR 里等队列空位、等锁，会拖垮整个中断体系。
+:::
+
+:::warning[命令队列满了怎么办]
+`k_msgq_put()` 返回 `-EAGAIN` 表示队列满、命令未入队。主机命令被丢弃的直接后果是主机侧超时重试甚至风暴：要么在线程上下文阻塞等待，要么加大 `max_msgs` 并用 `k_msgq_num_used_get()` 监控积压水位。
+:::
+
+:::warning[共享窗口别多线程混写]
+同一共享内存窗口固定一个属主线程写入；确实要多线程访问时，用 `k_mutex_lock()` 把"读-改-写"整段包住，不能只锁单条赋值语句。Host 侧的读取顺序无法用 EC 侧的锁保证——必须靠版本号/有效标志的更新顺序约定。
+:::
+
+### 最小示例：ISR 卸载 + 命令分发（native_sim 可跑）
+
+定时器 expiry 回调（ISR 上下文）模拟主机命令到达，分发线程从队列取命令、加锁更新共享区：
+
+```c
+#include <zephyr/kernel.h>
+
+struct host_cmd {
+    uint8_t cmd;
+    uint8_t payload;
+};
+
+K_MSGQ_DEFINE(cmdq, sizeof(struct host_cmd), 8, 4);
+K_MUTEX_DEFINE(shm_lock);
+
+static struct {
+    uint32_t version;
+    uint32_t value;
+} ec2host_shm;
+
+static void dispatch_thread(void *p1, void *p2, void *p3)
+{
+    struct host_cmd c;
+    while (true) {
+        k_msgq_get(&cmdq, &c, K_FOREVER);
+        switch (c.cmd) {
+        case 0x80: /* 整段"读-改-写"加锁 */
+            k_mutex_lock(&shm_lock, K_FOREVER);
+            ec2host_shm.version++;
+            ec2host_shm.value = c.payload;
+            k_mutex_unlock(&shm_lock);
+            break;
+        default:
+            break;
+        }
+    }
+}
+K_THREAD_DEFINE(dispatch_tid, 2048, dispatch_thread, NULL, NULL, NULL, 3, 0, 0);
+
+/* 定时器 expiry 回调在 ISR 上下文执行，模拟"主机命令到达"中断 */
+static void host_isr_sim(struct k_timer *t)
+{
+    ARG_UNUSED(t);
+    struct host_cmd c = { .cmd = 0x80, .payload = 0xA5 };
+    (void)k_msgq_put(&cmdq, &c, K_NO_WAIT); /* ISR 中只能 K_NO_WAIT */
+}
+K_TIMER_DEFINE(host_sim, host_isr_sim, NULL);
+
+int main(void)
+{
+    k_timer_start(&host_sim, K_MSEC(50), K_MSEC(200));
+    return 0;
+}
+```
+
+```bash
+west build -b native_sim
+./build/zephyr/zephyr.exe
+```
+
+> 深入阅读：ISR 与线程交互、同步机制与优先级分配见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；`k_msgq` 与 `k_poll`、`zbus` 的选型决策表见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+
 ## 通信接口
 
 LPC（Low Pin Count）——传统 x86 架构的 EC 接口，主机通过固定 I/O 端口访问 EC：
@@ -46,6 +145,10 @@ void smchost_acpi_handler(void)
 }
 ```
 
+:::note[上游对应]
+若 `smchost_acpi_handler` 由中断驱动，"收字节 → 组帧 → 分发"对应 Zephyr 的 ISR 卸载模型：ISR 内 `k_msgq_put(K_NO_WAIT)` 投递，分发线程阻塞 `k_msgq_get()` 后查表处理（见 [内核机制：ISR 与线程交互](/docs/zephyr-kernel/05_kernel_mechanisms)）。
+:::
+
 命令分发：
 
 ```c
@@ -78,4 +181,8 @@ config CSCE250X_PERIPHERAL_HOST_SHD_MEM_ADDRESS
 ```
 
 CSCE250X 支持两个共享内存窗口，默认地址分别为 `0x2002F000` 和 `0x2002F100`，用户可按需修改。
+
+:::note[上游对应]
+`CONFIG_CSCE250X_*` 窗口地址是芯片定制 Kconfig；其背后的依赖/默认值/覆盖机制属 Zephyr 原生配置系统（见 [配置系统](/docs/zephyr-kernel/06_config_system)）。EC 内部对共享窗口的跨线程访问请用 `k_mutex` 等内核同步原语保护，见本页开头"Zephyr 机制基础"。
+:::
 

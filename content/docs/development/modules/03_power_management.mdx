@@ -6,6 +6,90 @@ description: 电源管理——系统电源状态机、电源序列控制与 pwr
 
 电源管理模块是 EC 固件的核心，负责系统全局的电源状态控制与协调。代码位于 `app/power_sequencing/` 和 `app/power_management/`。
 
+## Zephyr 机制基础：电源模块的内核底座
+
+电源管理是"每模块一个 Zephyr 线程"架构的最典型代表：pwrseq 线程以 1ms 周期运行在最高应用优先级，靠 `k_event` 接收 sysevent 广播，靠周期栅格定时扫描电源信号。本节先讲清这三个上游机制，再看电源状态机与序列表就只剩下业务逻辑。
+
+### 每模块一个线程：K_THREAD_DEFINE 静态定义
+
+Zephyr 线程是独立的可调度执行流，推荐编译期静态定义：`K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` 在链接期分配线程控制块与栈（栈可用 `K_THREAD_STACK_DEFINE(sym, size)` 显式声明，`K_THREAD_STACK_SIZEOF(stack)` 计算实际大小）。本方案通过 `task_info[]` 静态线程表在启动时遍历 `k_thread_create()`，与"每个模块写一个 K_THREAD_DEFINE"逐项等价；`delay` 参数决定是否延迟启动，`prio` 数值越小优先级越高——pwrseq 的 1ms 周期正是靠高优先级保证。
+
+### 事件协调：k_event
+
+跨模块电源事件（S5→S0、进入深度睡眠等）由 sysevent 通过 `k_event_post(event, mask)` 广播到各子系统的事件对象；等待方用 `k_event_wait(event, events, wait_all, timeout)` 阻塞等待或非阻塞检查，返回命中位图或 0。电源线程由此实现"周期扫描 + 事件即时唤醒"两种节奏并存。
+
+### 周期栅格：k_sleep 与 K_TIMEOUT_ABS_MS
+
+周期任务的朴素写法是相对睡眠 `k_msleep(K_MSEC(period))`——但每轮循环的处理耗时会计入周期，产生累积漂移。上游提供的绝对截止时刻工具是 `K_TIMEOUT_ABS_MS(ms)`：先取当前 uptime 计算下一个栅格点的绝对时刻，睡眠"到该时刻"而不是"再睡 period 毫秒"，循环耗时不再累积。另外，ISR 上下文（VW 回调）里的阻塞调用只能传 `K_NO_WAIT`，电源信号的等待必须放在线程上下文。
+
+### API 签名速查（Zephyr 3.7.0 已核实）
+
+| 原语 | API | 语义要点 |
+|------|-----|----------|
+| k_thread | `K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` | 编译期静态定义线程 |
+| k_thread | `K_THREAD_STACK_DEFINE(sym, size)` | 声明线程栈 |
+| k_thread | `K_THREAD_STACK_SIZEOF(stack)` | 计算栈实际大小 |
+| k_thread | `k_thread_create(new_thread, stack, stack_size, entry, p1, p2, p3, prio, options, delay)` | 运行期创建（task_info[] 路径） |
+| k_thread | `k_thread_join(thread, timeout)` | 等待线程结束 |
+| k_thread | `k_thread_abort(thread)` | 强杀线程——不释放线程所持资源 |
+| k_event | `K_EVENT_DEFINE(name)` | 编译期定义事件对象 |
+| k_event | `k_event_post(event, mask)` | 置位事件位，线程/ISR 均可调用 |
+| k_event | `k_event_wait(event, events, wait_all, timeout)` | 等待事件位，返回命中位图或 0 |
+| k_timeout | `K_MSEC(ms)` / `K_SECONDS(s)` / `K_TIMEOUT_ABS_MS(ms)` | 相对超时与绝对截止时刻 |
+| k_timeout | `K_NO_WAIT` / `K_FOREVER` | 不等待 / 永久等待 |
+| 栈测量 | `k_thread_stack_space_get(thread, &unused)`（需 CONFIG_THREAD_STACK_INFO + CONFIG_INIT_STACKS） | 统计栈未用余量 |
+
+### 陷阱清单
+
+:::danger[周期任务的漂移与线程强杀]
+- `k_msleep(K_MSEC(period))` 是相对睡眠，每轮执行耗时都会累积进周期；时序敏感的电源监控应使用 `K_TIMEOUT_ABS_MS()` 绝对栅格
+- `k_thread_abort()` 不释放线程所持资源（互斥锁、信号量、堆内存）——电源序列线程只应正常运行或永不退出
+:::
+
+:::warning[优先级与阻塞]
+- 优先级数值越小越高：高优先级线程若阻塞在只有低优先级线程能提供的资源上会造成优先级反转（`k_mutex_lock` 的优先级继承可缓解）
+- ISR（VW 回调）中只能 `K_NO_WAIT`：等待 SLP_Sx 信号之类的轮询必须放在线程上下文（如 `wait_handler` 式循环）
+:::
+
+:::success[native_sim 可直接验证]
+下例演示"静态线程 + 绝对栅格 + 事件提前唤醒"的最小组合，`west build -b native_sim` 后运行 `./build/zephyr/zephyr.exe` 观察（Ctrl+C 结束）。
+:::
+
+```c
+#include <zephyr/kernel.h>
+
+K_EVENT_DEFINE(pm_evt);
+#define PM_EVT_DEEPSLEEP_REQ BIT(3)
+
+/* 每模块一个线程：静态定义，100ms 绝对栅格，事件可提前唤醒 */
+static void pm_demo_thread(void)
+{
+    uint32_t grid = k_uptime_get_32() + 100;    /* 下一个栅格点的绝对时刻 */
+
+    while (true) {
+        uint32_t hit = k_event_wait(&pm_evt, PM_EVT_DEEPSLEEP_REQ, true,
+                                    K_TIMEOUT_ABS_MS(grid));
+        if (hit) {
+            printk("event 0x%x -> deep sleep prep\n", hit);
+        }
+        /* 周期工作（电源信号扫描等）放这里 */
+
+        grid += 100;                            /* 绝对时刻步进，不累积执行耗时 */
+    }
+}
+
+K_THREAD_DEFINE(pm_demo_tid, 1024, pm_demo_thread, NULL, NULL, NULL, 5, 0, 0);
+
+int main(void)
+{
+    k_msleep(350);                              /* 先跑 3 个栅格点 */
+    k_event_post(&pm_evt, PM_EVT_DEEPSLEEP_REQ);/* 再模拟一次事件广播 */
+    return 0;
+}
+```
+
+线程与同步原语全解见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；`k_timeout` 与异步机制选型见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+
 ## 系统电源状态机
 
 系统电源状态基于 ACPI 规范定义（`enum system_power_state`，来自 `include/system.h`），共 15 个状态：
@@ -109,6 +193,10 @@ Modern Standby 状态：
    - 检查 `g_pwrflags.turn_pwr_off` — 若为 true，调用 `transition_power_state(SYSTEM_S0_S5_STATE)` 并清除标志
    - `pwrseq_update()` — 若当前无序列错误，根据 `SysPowState` 分发到对应过渡处理函数（如 `pwrseq_handle_transition_s5_to_s0`），每个处理函数内部调用 `process_power_seq()` 执行对应序列表
 
+:::note[上游对应]
+`pwrseq_thread` 是"每模块一个 Zephyr 线程"架构的实例，对应 `K_THREAD_DEFINE` 静态线程定义模式（入口/栈/优先级三要素）；主循环的 `k_msleep(period)` 是相对睡眠，上游防漂移做法是 `K_TIMEOUT_ABS_MS()` 绝对栅格，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms) 与 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+:::
+
 电源控制标志位（`struct pwr_flags`，位域结构体）实时反映电源状态：
 
 | 标志位 | 含义 |
@@ -153,6 +241,10 @@ EC 从上电到进入正常运行状态的启动序列：
 5. `init_subsystems_events()`：初始化 10 个 `k_event` 对象
 6. `start_all_tasks()`：遍历 `task_info[]` 静态数组，为每个任务创建 Zephyr 线程并启动
 
+:::note[上游对应]
+`init_subsystems_events()` 初始化的 10 个 `k_event` 对象即上游 `k_event` 原语：广播方 `k_event_post()`、等待方 `k_event_wait()`（返回命中位图或 0），见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+:::
+
 ## 任务表结构
 
 `task_info[]` 是编译期定义的静态线程注册表，每个条目包含：
@@ -165,6 +257,10 @@ EC 从上电到进入正常运行状态的启动序列：
 | 线程名称 | 用于调试和 Shell 显示的字符串标识 |
 
 pwrseq_thread 具有最高优先级（1ms 周期），其余应用模块按业务重要度分配优先级。
+
+:::note[上游对应]
+`task_info[]` 静态线程表是 `K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` 静态线程定义模式的集中化变体：表项四要素（入口/栈/优先级/名称）与宏参数一一对应，启动时经 `k_thread_create()` 逐一创建，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
 
 ## 复位源鉴别
 

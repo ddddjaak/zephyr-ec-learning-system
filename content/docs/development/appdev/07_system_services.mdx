@@ -3,6 +3,79 @@ title: 系统服务速查
 description: 系统服务速查——看门狗、定时器、内存布局等基础设施的用法
 ---
 
+## Zephyr 机制基础：k_timer、延迟工作与 k_timeout
+
+本页的定时器与喂狗策略都建立在上游内核原语之上：`k_timer` 软定时器、可延迟工作项（delayable work）与 `k_timeout` 超时类型。先弄清它们的执行上下文与语义差异，再看本页的 EC 用法；异步与 IPC 机制的选型全图见 [/docs/zephyr-kernel/13_async_messaging](/docs/zephyr-kernel/13_async_messaging)。
+
+**k_timer：expiry 回调在 ISR 上下文执行。** `K_TIMER_DEFINE(name, expiry_fn, stop_fn)` 静态定义一个基于系统时钟的软定时器，`k_timer_start(timer, duration, period)` 以"首次延时 duration、之后每 period 到期一次"启动。到期回调 `expiry_fn` 运行在**系统时钟中断上下文**（不是线程）：回调内禁止调用任何阻塞 API（睡眠、带超时的队列/信号量操作、互斥锁），只做提交 work、置标志、`K_NO_WAIT` 投递这类瞬时动作，耗时处理交给 work 或线程。`k_timer_stop(timer)` 停止定时器。
+
+**delayable work：把"到点之后做什么"搬到线程上下文。** `K_WORK_DELAYABLE_DEFINE(work, handler)` 定义可延迟工作项，`k_work_schedule(dwork, delay)` 与 `k_work_reschedule(dwork, delay)` 都能把执行推迟到系统工作队列，但对"已 pending"的工作项语义不同：
+
+| API | 已 pending 时的行为 | 典型用途 |
+|-----|--------------------|----------|
+| `k_work_schedule(dwork, delay)` | no-op（不重排、不重置计时） | 确保"至少在 delay 后跑一次" |
+| `k_work_reschedule(dwork, delay)` | 无条件重置截止时间 | 顺延截止时刻 / 周期性重新排程 |
+| `k_work_submit(work)` | 返回 0/1/2（提交后的状态标志） | 立即投递普通工作项 |
+| `K_WORK_DEFINE(work, handler)` | —— | 定义普通（不可延迟）工作项，配合 `k_work_submit` 使用 |
+| `k_work_cancel_sync(work, &sync)` | 返回 bool 表示取消结果 | 取消并等待，避免 handler 与清理代码竞态 |
+| `k_work_flush(work, &sync)` | 等待已排队的 work 执行完成 | 退出/反初始化前把 pending 的活跑完 |
+
+系统工作队列是全系统共享的单线程，`handler` 内同样禁止阻塞——任何一个 handler 卡住，所有排队的任务都要等它。其栈大小与优先级由 `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE`、`CONFIG_SYSTEM_WORKQUEUE_PRIORITY` 配置；`struct k_work_sync` 必须是局部变量，且同一时间只能有一个在使用。
+
+**k_timeout：相对时长与绝对截止时刻。** 所有带超时参数的内核 API 都接受 `k_timeout_t`：`K_NO_WAIT`（立即返回）、`K_FOREVER`（永久等待）、`K_MSEC(ms)` / `K_SECONDS(s)`（从当前时刻起算的相对时长）、`K_TIMEOUT_ABS_MS(ms)`（绝对截止时刻）。周期任务的典型漂移来源：handler 每轮处理耗时 d，若每轮结束时都用 `K_MSEC(period)` 重排下一轮，实际周期会变成 period + d 并逐轮累积；改用 `K_TIMEOUT_ABS_MS(上一轮截止时刻 + period)` 重排，就能始终对齐理想时刻栅格。另注意：ISR 里调用带超时的阻塞 API 时，超时只允许 `K_NO_WAIT`。
+
+最小示例（native_sim 可跑，不依赖任何芯片硬件）：
+
+```c
+#include <zephyr/kernel.h>
+
+static void tick_work_handler(struct k_work *work)
+{
+    ARG_UNUSED(work);
+    /* 真正的处理体：系统工作队列线程上下文 */
+}
+
+static K_WORK_DELAYABLE_DEFINE(tick_work, tick_work_handler);
+
+static void tick_timer_expiry(struct k_timer *timer)
+{
+    ARG_UNUSED(timer);
+    /* ISR 上下文：只安排 work，绝不阻塞 */
+    k_work_reschedule(&tick_work, K_NO_WAIT);
+}
+
+K_TIMER_DEFINE(tick_timer, tick_timer_expiry, NULL);
+
+int main(void)
+{
+    /* 首次延时 1s，之后每 1s 到期一次 */
+    k_timer_start(&tick_timer, K_SECONDS(1), K_SECONDS(1));
+    return 0;
+}
+```
+
+```bash
+west build -b native_sim
+./build/zephyr/zephyr.exe
+```
+
+:::danger
+`k_timer` 的 `expiry_fn` 回调运行在系统时钟中断上下文：禁止调用阻塞 API（睡眠、带超时的队列/信号量操作、互斥锁），只允许提交 work、置标志、`K_NO_WAIT` 投递。
+:::
+
+:::warning
+`k_work_schedule` 对已 pending 的 delayable work 是 no-op——想"顺延"必须改用 `k_work_reschedule`，否则任务既不会推迟也不会重新计时。
+:::
+
+:::warning
+系统工作队列全系统共享：任何一个 `handler` 阻塞都会拖住所有排队的 work。栈与优先级用 `CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE` / `CONFIG_SYSTEM_WORKQUEUE_PRIORITY` 调整。
+:::
+
+:::success
+周期任务用 `K_TIMEOUT_ABS_MS`（绝对截止时刻）而非 `K_MSEC`（相对时长）计算下一轮触发点，可消除逐轮累积的时间漂移。
+:::
+
+线程、同步、中断、IPC 与 workqueue 的完整机制在 [/docs/zephyr-kernel/05_kernel_mechanisms](/docs/zephyr-kernel/05_kernel_mechanisms)（其 workqueue 小节已全面展开），`k_timeout` 与异步选型见 [/docs/zephyr-kernel/13_async_messaging](/docs/zephyr-kernel/13_async_messaging)。读完再回到下面的 EC 用法。
 
 ## 看门狗（WDT）
 
@@ -44,6 +117,10 @@ void wdt_feed_task(void)
 }
 ```
 
+:::note[上游对应]
+`DEVICE_DT_GET(DT_NODELABEL(...))` 与设备树中的 `compatible = "chipsea,csce250x-iwdt"` 是 Zephyr 驱动模型的标准绑定方式：设备树声明硬件实例，应用经设备句柄取用。兼容字符串的匹配与 DT_INST 多实例化见 [/docs/zephyr-kernel/07_driver_model](/docs/zephyr-kernel/07_driver_model)。
+:::
+
 建议：每隔固定时间喂狗（如 500ms），集中在"系统健康任务"中统一管理。在进入深度睡眠前可适当延长超时时间。
 
 ## 定时器
@@ -74,6 +151,10 @@ void fan_timer_init(void)
     k_timer_start(&fan_timer, K_SECONDS(1), K_MSEC(500));
 }
 ```
+
+:::note[上游对应]
+`K_TIMER_DEFINE` / `K_WORK_DEFINE` / `k_work_submit` 都是上游内核原语，本页只展示 EC 常用组合；expiry 回调上下文与 schedule/reschedule 的语义差异见本页开头「Zephyr 机制基础」，完整展开见 [/docs/zephyr-kernel/05_kernel_mechanisms](/docs/zephyr-kernel/05_kernel_mechanisms) 的 workqueue 小节。
+:::
 
 硬件定时器（counter）——提供比 k_timer 更精确的定时，适用于对时序要求严格的场景：
 
@@ -122,6 +203,10 @@ CSCE250X 的内存区域在设备树中定义：
 
 推荐：EC 固件优先使用静态分配 + 内存池，避免频繁堆分配导致的碎片化。
 
+:::note[上游对应]
+`K_MSGQ_DEFINE`（内核消息队列，线程间 IPC）、`K_MEM_SLAB_DEFINE`（定长块内存池）与 `K_THREAD_STACK_DEFINE`（线程栈）都是内核对象生命周期原语：消息队列等 IPC 语义见 [/docs/zephyr-kernel/05_kernel_mechanisms](/docs/zephyr-kernel/05_kernel_mechanisms)，slab 与栈测量见 [/docs/zephyr-kernel/15_object_lifecycle](/docs/zephyr-kernel/15_object_lifecycle)。
+:::
+
 ## 低功耗
 
 Zephyr PM 框架会在系统空闲线程中自动决策进入低功耗。EC 应用在 `app/power_management/power_management.c` 的 `check_enter_deepsleep()` 中设定了进入 deepsleep 的条件，客户可按需修改。
@@ -133,6 +218,10 @@ CONFIG_PM=y                  # 启用电源管理
 CONFIG_TICKLESS_KERNEL=y     # Tickless 模式，空闲时关闭时钟中断
 CONFIG_PM_DEVICE=y           # 启用设备级电源管理
 ```
+
+:::note[上游对应]
+`CONFIG_PM` / `CONFIG_TICKLESS_KERNEL` / `CONFIG_PM_DEVICE` 是 Zephyr 电源管理子系统的上游 Kconfig（非 EC 定制层）；子系统全貌见 [/docs/zephyr-kernel/08_subsystems](/docs/zephyr-kernel/08_subsystems)。
+:::
 
 系统进入低功耗的必要条件：无可运行任务（所有线程处于等待/阻塞状态）、无活动外设、近期无定时事件到期、系统策略允许进入。
 

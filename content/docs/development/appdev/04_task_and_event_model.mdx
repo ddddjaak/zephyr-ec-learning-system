@@ -6,6 +6,99 @@ description: 任务与事件模型——K_THREAD_DEFINE 静态线程、线程栈
 
 在 EC 固件中，线程（任务）是功能模块的基本执行单元，事件框架用于模块间的解耦通信。
 
+## Zephyr 机制基础：静态线程、事件位与消息队列
+
+本页的 EC 任务与事件框架完全构建在 Zephyr 内核三件原语之上：`K_THREAD_DEFINE` 静态线程、`k_event` 事件位、`k_msgq` 消息队列。先吃透上游原语的语义，再读下文的 EC 封装，很多设计取舍会一目了然。
+
+**静态线程（k_thread）**：Zephyr 中每个线程 = 一个线程控制块 + 一段栈。`K_THREAD_DEFINE` 在编译期为二者静态分配内存（不走堆、无运行期分配失败），并按 `delay` 参数决定初始状态：`delay` 为数值时线程立即参与调度，为 `K_FOREVER` 时创建后保持挂起，直到显式调用 `k_thread_start()`。EC 框架的 `start_all_tasks()` 统一启动正是建立在 `K_FOREVER` 语义之上。线程入口固定为三参数签名 `void (*)(void *, void *, void *)`，`p1/p2/p3` 在定义处一并传入。
+
+**事件位（k_event）**：`k_event` 是 32 位位掩码事件对象，提供"一对多广播"语义：任意上下文（线程或 ISR）调用 `k_event_post()` 置位，一个或多个线程各自用 `k_event_wait()` 等待自己关心的位子集。`k_event_wait()` 返回实际命中的位图（超时返回 0），`wait_all` 为 `true` 时要求所有指定位同时置位才算命中。注意位不会因被等待而自动清除，消费方通常需要 `k_event_clear()`，否则下一次 `k_event_wait()` 会立即返回。
+
+**消息队列（k_msgq）**：`k_msgq` 在线程（或 ISR）之间传递**定长**消息拷贝：发送方 `k_msgq_put()` 把数据按 `msg_size` 拷入环形缓冲，接收方 `k_msgq_get()` 拷出；队列满时 put 返回 `-EAGAIN`（不覆盖旧数据），空时 get 按超时参数阻塞等待。它与 `k_event` 互补：事件位传递"发生了什么"（纯信号），消息队列搬运"数据本身"。
+
+### 核心 API 一览
+
+| 原语 | API | 说明 |
+|------|-----|------|
+| 静态线程 | `K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` | 编译期定义线程与栈；`delay=K_FOREVER` 时挂起待 `k_thread_start()` |
+| 静态线程 | `K_THREAD_STACK_DEFINE(sym, size)` / `K_THREAD_STACK_SIZEOF(stack)` | 动态创建场景下声明栈内存与取栈大小 |
+| 静态线程 | `k_thread_create(new_thread, stack, stack_size, entry, p1, p2, p3, prio, options, delay)` | 运行期创建线程（须自备栈内存） |
+| 静态线程 | `k_thread_join(thread, timeout)` | 等待线程退出 |
+| 静态线程 | `k_thread_abort(thread)` | 强行终止线程——不释放线程所持资源 |
+| 事件位 | `K_EVENT_DEFINE(name)` / `k_event_init(event)` | 静态定义 / 运行期初始化事件对象 |
+| 事件位 | `k_event_post(event, mask)` | 置位并唤醒等待者，线程与 ISR 均可调用 |
+| 事件位 | `k_event_wait(event, events, wait_all, timeout)` | 等待位子集，返回命中位图或 0 |
+| 消息队列 | `K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` | 编译期定义定长消息队列 |
+| 消息队列 | `k_msgq_init(msgq, buffer, msg_size, max_msgs)` | 运行期初始化（须自备缓冲区） |
+| 消息队列 | `k_msgq_put(msgq, data, timeout)` | 投递消息，队列满返回 `-EAGAIN` |
+| 消息队列 | `k_msgq_get(msgq, data, timeout)` | 取出消息，可阻塞等待 |
+| 消息队列 | `k_msgq_purge(msgq)` / `k_msgq_num_used_get(msgq)` | 清空队列 / 查询当前消息数 |
+
+### 陷阱清单
+
+:::danger[事件位必须是独立 BIT(n)]
+`k_event` 基于 32 位位掩码，事件必须定义为 `BIT(0)`、`BIT(1)`、`BIT(2)`……这类互不重叠的独立位。若按顺序整数值 1、2、3 定义（即占位 0、1、2），单个事件会与组合判断互相污染，造成误触发。下文 `sysevent.h` 的 `EC_EVENT_*` 就是 BIT(n) 风格。
+:::
+
+:::danger[k_thread_abort 不回收资源]
+`k_thread_abort()` 强行终止线程，但**不释放该线程持有的资源**（互斥锁、信号量、动态内存等），持有 `k_mutex` 的线程被 abort 后锁将无法释放。EC 任务模型选择"线程永不退出、`K_FOREVER` 挂起待启"而非动态创建/销毁，正源于此。
+:::
+
+:::warning[ISR 上下文只能 K_NO_WAIT]
+所有可能阻塞的 API（`k_msgq_put` / `k_msgq_get` / `k_event_wait` / `k_sem_take` 等）在 ISR 中调用时，超时参数只能传 `K_NO_WAIT`。中断里只做投递（post 事件位、无等待 put 消息），耗时处理一律留给线程。
+:::
+
+:::warning[忽略 k_msgq_put 返回值 = 丢消息]
+队列满时 `k_msgq_put()` 返回 `-EAGAIN` 且数据不写入。日志类消息可容忍丢弃，命令/数据类消息必须处理返回值：要么阻塞等待（仅线程上下文），要么加大 `max_msgs` 深度并用 `k_msgq_num_used_get()` 监控水位。
+:::
+
+### 最小示例：生产者-消费者（native_sim 可跑）
+
+生产线程投递计数并 post 事件位，消费线程等事件后从队列取数——信号与数据两条通道各司其职：
+
+```c
+#include <zephyr/kernel.h>
+
+K_MSGQ_DEFINE(demo_msgq, sizeof(uint32_t), 8, 4);
+K_EVENT_DEFINE(demo_events);
+#define DEMO_EVT_DATA_READY BIT(0)
+
+static void producer(void *p1, void *p2, void *p3)
+{
+    uint32_t counter = 0;
+    while (counter < 3) {
+        if (k_msgq_put(&demo_msgq, &counter, K_MSEC(100)) != 0) {
+            printk("queue full, drop %u\n", counter);
+        }
+        k_event_post(&demo_events, DEMO_EVT_DATA_READY);
+        counter++;
+        k_msleep(50);
+    }
+}
+
+static void consumer(void *p1, void *p2, void *p3)
+{
+    uint32_t value;
+    while (true) {
+        k_event_wait(&demo_events, DEMO_EVT_DATA_READY, false, K_FOREVER);
+        k_event_clear(&demo_events, DEMO_EVT_DATA_READY);
+        while (k_msgq_get(&demo_msgq, &value, K_NO_WAIT) == 0) {
+            printk("consumed: %u\n", value);
+        }
+    }
+}
+
+K_THREAD_DEFINE(producer_tid, 1024, producer, NULL, NULL, NULL, 5, 0, 0);
+K_THREAD_DEFINE(consumer_tid, 1024, consumer, NULL, NULL, NULL, 6, 0, 0);
+```
+
+```bash
+west build -b native_sim
+./build/zephyr/zephyr.exe
+```
+
+> 深入阅读：线程/同步/中断/IPC 完整讲解见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；`k_msgq` 与 `k_poll`、`zbus` 等异步机制如何选型，见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+
 ## 线程定义与类型
 
 EC 框架使用 `K_THREAD_DEFINE` 宏进行静态线程定义，在编译时分配资源：
@@ -22,6 +115,10 @@ K_THREAD_DEFINE(
     K_FOREVER           /* 延迟启动时间：挂起等待 start_all_tasks() 统一启动 */
 );
 ```
+
+:::note[上游对应]
+`K_THREAD_DEFINE` 就是 Zephyr 静态线程原语（`k_thread`）：`delay=K_FOREVER` 挂起 + `k_thread_start()` 启动为内核原生语义，优先级与栈规划详见 [内核机制：线程管理](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
 
 EC 系统中有三种典型任务类型：
 
@@ -104,6 +201,10 @@ struct task_info {
 };
 ```
 
+:::note[上游对应]
+`task_info` 是 EC 定制元数据层：其 `thread_id` 字段即 `K_THREAD_DEFINE` 生成的内核线程句柄 `k_tid_t`，挂起/恢复直接复用内核线程控制语义（见 [内核机制：线程管理](/docs/zephyr-kernel/05_kernel_mechanisms)）。
+:::
+
 ## EC 事件框架
 
 事件驱动模型以"状态变化触发动作"为核心，基于 Zephyr `k_event` 原语实现模块间一对多广播。
@@ -123,6 +224,10 @@ struct task_info {
 #define EC_EVENT_ENTER_DEEP_SLEEP BIT(11)
 #define EC_EVENT_EXIT_DEEP_SLEEP  BIT(12)
 ```
+
+:::note[上游对应]
+`sysevent` 事件定义与广播对应 Zephyr `k_event` 事件位原语：`k_event_post()` 置位广播、`k_event_wait()` 阻塞等待，"模块解耦 + 一对多广播"正是内核事件对象的语义（见 [内核机制：事件](/docs/zephyr-kernel/05_kernel_mechanisms)）。
+:::
 
 事件广播——当系统状态变化时，`notify_subsystems()` 将事件同时发布给所有子系统：
 
@@ -161,4 +266,8 @@ static void charger_sys_event(void)
 事件框架的核心优势：模块解耦（子系统仅感知事件，不直接依赖其他模块逻辑）、统一广播（同一事件可同时触发多个子系统响应）、易于扩展（新增子系统只需添加对应 `k_event` 对象与监听线程）。
 
 > EC 框架也使用 Zephyr 标准 IPC 机制（消息队列用于任务间传递结构化数据、信号量用于任务间同步通知、互斥锁用于保护共享资源），但这些是 Zephyr 通用知识，本节不再展开。
+
+:::note[上游对应]
+文中提到的消息队列、信号量、互斥锁即 Zephyr 的 `k_msgq` / `k_sem` / `k_mutex`；多种异步机制（`k_msgq`、`k_poll`、`zbus`）的选型对比见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+:::
 

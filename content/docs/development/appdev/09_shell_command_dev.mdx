@@ -5,6 +5,57 @@ description: 为功能模块注册 Shell 调试命令——基础命令、带参
 
 EC 固件的每个功能模块几乎都值得暴露几条 Shell 命令：查看状态、手动触发动作、注入测试数据。Zephyr Shell 的注册是纯编译期宏，零运行时开销（不开启 `CONFIG_SHELL` 时完全不进固件）。命令运行时行为与内置命令一致，速查见[命令速查表](/docs/reference/01_command_reference)。
 
+## Zephyr 机制基础：Shell 子系统的架构
+
+本页的注册宏都是 Zephyr Shell 子系统的上游原语。这里只补最小必要的架构，完整展开（实例/后端/补全机制）见 [/docs/zephyr-kernel/08_subsystems](/docs/zephyr-kernel/08_subsystems) 的 Shell 小节。
+
+- **实例与后端**：一个 shell 实例 = 一套命令行解析 + 一个传输后端。`CONFIG_SHELL=y` 启用框架，`CONFIG_SHELL_BACKEND_SERIAL=y` 挂串口后端；同一棵命令树挂在所有已启用后端的实例上，行为一致。
+- **命令树**：命令组织成一棵**编译期构建**的树——`SHELL_CMD_REGISTER` 注册根命令，`SHELL_STATIC_SUBCMD_SET_CREATE` + `SHELL_CMD` + `SHELL_SUBCMD_SET_END` 挂静态子命令集合，`SHELL_DYNAMIC_CMD_CREATE` 挂运行时生成的动态子命令。所有宏都是纯编译期展开：不开启 `CONFIG_SHELL` 时，命令树与处理函数完全不进固件，零运行时开销。
+- **执行上下文**：handler 在 shell 线程上下文执行（不是 ISR），可以调用阻塞类内核 API，但会卡住该实例的后续命令处理——长耗时操作应转交 work/线程。
+
+| 宏 / Kconfig | 层级 | 作用 |
+|--------------|------|------|
+| `SHELL_CMD_REGISTER(name, subcmd, help, handler)` | 根命令 | 注册根命令，`subcmd` 传子命令集合或 `NULL` |
+| `SHELL_CMD_ARG_REGISTER(name, subcmd, help, handler, 必选数, 可选数)` | 根命令 | 带参数个数校验的根命令 |
+| `SHELL_STATIC_SUBCMD_SET_CREATE` / `SHELL_CMD` / `SHELL_SUBCMD_SET_END` | 子命令 | 定义静态子命令集合 |
+| `SHELL_DYNAMIC_CMD_CREATE(dsub, getter)` | 子命令 | 动态补全子命令 |
+| `CONFIG_SHELL` / `CONFIG_SHELL_BACKEND_SERIAL` / `CONFIG_SHELL_LOG_BACKEND` | Kconfig | Shell 框架 / 串口后端 / 日志输出桥接 |
+
+最小示例（native_sim 可跑，不依赖任何芯片硬件）：
+
+```c
+#include <zephyr/shell/shell.h>
+
+static int cmd_hello(const struct shell *sh, size_t argc, char **argv)
+{
+    ARG_UNUSED(argc);
+    ARG_UNUSED(argv);
+    shell_print(sh, "hello from shell");
+    return 0;
+}
+
+SHELL_CMD_REGISTER(hello, NULL, "Say hello", cmd_hello);
+```
+
+```ini
+CONFIG_SHELL=y
+CONFIG_SHELL_BACKEND_SERIAL=y
+```
+
+```bash
+west build -b native_sim
+./build/zephyr/zephyr.exe
+```
+
+```
+uart:~$ hello
+hello from shell
+```
+
+:::warning
+handler 在 shell 线程上下文执行：阻塞它会卡住该实例的所有后续命令（包括日志输出）。动作类命令的长耗时部分转交 work/线程，handler 只做参数校验与触发。
+:::
+
 ## 基础配置
 
 ```ini
@@ -12,6 +63,10 @@ CONFIG_SHELL=y                    # Shell 框架
 CONFIG_SHELL_BACKEND_SERIAL=y     # 串口后端（或 RTT）
 CONFIG_SHELL_LOG_BACKEND=y        # 日志输出到 Shell 控制台
 ```
+
+:::note[深化指引]
+`CONFIG_*` 如何从 prj.conf / Kconfig 生效（依赖、默认值、优先级）见 [/docs/zephyr-kernel/06_config_system](/docs/zephyr-kernel/06_config_system)；Shell 子系统的配置项全集见 [/docs/zephyr-kernel/08_subsystems](/docs/zephyr-kernel/08_subsystems) 的 Shell 小节。
+:::
 
 ## 注册一条最简单的命令
 
@@ -46,6 +101,10 @@ Battery: 89%, 11400 mV, discharging
 - 返回 `0` 表示成功；返回负值（如 `-EINVAL`）不会触发任何 Shell 提示，仅作为 `shell_execute_cmd()` 的返回码传递给调用方——需要向用户报错时，在 handler 里自己调 `shell_error()`。参数**个数**不符时 Shell 才会自动打印用法提示（标红）。
 - 输出一律用 `shell_print()` / `shell_error()` / `shell_warn()`（自动带模块前缀与配色），不要用 `printk`——它绕过 Shell 通道。
 - `SHELL_CMD_REGISTER` 注册的是**根命令**，同名的只允许一个，建议以模块名命名（`battery`、`charger`、`thermal`）。
+
+:::note[深化指引]
+`SHELL_CMD_REGISTER` 的 `subcmd` 参数就是命令树的挂接点（传 `NULL` 即叶子根命令）；Tab 补全、历史记录与实例/后端模型在 [/docs/zephyr-kernel/08_subsystems](/docs/zephyr-kernel/08_subsystems) 的 Shell 小节展开。
+:::
 
 ## 带参数的命令
 
@@ -121,12 +180,20 @@ SHELL_DYNAMIC_CMD_CREATE(dsub_channel, channel_name_get);
 
 然后把 `&dsub_channel` 作为命令的 `subcmd` 参数传入即可。
 
+:::note[上游对应]
+`SHELL_DYNAMIC_CMD_CREATE` 的 getter 协议（按下标逐个取项、返回 `NULL` 结束补全列表）是 Shell 子系统定义的上游动态补全协议，非 EC 定制层；完整交互见 [/docs/zephyr-kernel/08_subsystems](/docs/zephyr-kernel/08_subsystems) 的 Shell 小节。
+:::
+
 ## EC 模块的团队约定
 
 - **每个模块至少一条 `status` 子命令**：FAE 现场排错时按 `模块名 status` 就能拿到关键状态，不用翻日志。
 - 命令只读优先：查询类命令不加确认；**动作类命令（写 Flash、复位、强制关机）必须加参数确认**（如要求显式输入 `confirm` 才执行）——Shell 不会替你做二次确认，这条约定要在 handler 里自己实现。
 - 命令名用模块名做根（`battery`、`pd`、`port80`），不要发明缩写——Shell 有 Tab 补全，长名字没有成本。
 - 量产固件如需保留 Shell 但裁剪命令面，用 `CONFIG_SHELL_CMDS_SELECT` 只编译白名单命令。
+
+:::note[上游对应]
+`CONFIG_SHELL_CMDS_SELECT` 的命令白名单裁剪是 Shell 子系统的上游原生能力（非 EC 定制层）；Shell 的裁剪与配置项全集见 [/docs/zephyr-kernel/08_subsystems](/docs/zephyr-kernel/08_subsystems) 的 Shell 小节。
+:::
 
 ## 相关页面
 

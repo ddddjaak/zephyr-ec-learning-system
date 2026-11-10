@@ -6,6 +6,95 @@ description: 风扇与热管理——智能散热模式 ITS、风扇控制算法
 
 `app/thermal_management/` 通过对系统关键部位温度的监控，动态调整散热策略。
 
+## Zephyr 机制基础：热管理的内核原语
+
+热管理是"周期采样 → 上报 → 执行器控制"三步：定时触发采样、把采样值从中断上下文搬到线程上下文、再驱动风扇。上游 Zephyr 为三步各提供一个标准原语——k_timer 周期触发、k_msgq 上下文搬运、pwm_set_dt 执行器控制。
+
+### k_timer：周期采样的定时器
+
+`K_TIMER_DEFINE(name, expiry_fn, stop_fn)` 编译期定义定时器并绑定回调，`k_timer_start(timer, duration, period)` 启动：`duration` 是首次触发延时，`period` 非 `K_NO_WAIT` 则之后按固定周期反复触发——周期采样的标准形态。**关键约束：expiry 回调在 ISR 上下文执行**（由系统时钟中断驱动），回调内禁止任何阻塞 API。
+
+### k_msgq：从中断到线程的采样通道
+
+expiry 回调里只做最轻的事：读数、打时间戳、`k_msgq_put(msgq, data, K_NO_WAIT)` 投递一条采样消息；专职线程用 `k_msgq_get(msgq, data, K_FOREVER)` 阻塞等待取出，完成滤波、决策与执行器控制。队列水位可用 `k_msgq_num_used_get(msgq)` 监控——队列满说明消费端跟不上，需要丢弃/合并/降频策略，而不是在中断里死等。模式切换这类"状态位广播"则可用 `k_event_post(event, mask)` / `k_event_wait(event, events, wait_all, timeout)`。
+
+### 风扇执行器：pwm_set_dt
+
+风扇转速由 PWM 占空比控制，上游标准 API 是 `pwm_set_dt(spec, period, pulse)`——注意 `period` 与 `pulse` 的单位都是**纳秒**而非百分比，占空比 = pulse / period。本页缓启动/缓降算法的每次步进调整，最终都落到这一个调用上。
+
+### API 签名速查（Zephyr 3.7.0 已核实）
+
+| 原语 | API | 语义要点 |
+|------|-----|----------|
+| k_timer | `K_TIMER_DEFINE(name, expiry_fn, stop_fn)` | 编译期定义定时器并绑定回调 |
+| k_timer | `k_timer_start(timer, duration, period)` | 启动定时器；period 非 `K_NO_WAIT` 即周期触发 |
+| k_timer | `k_timer_stop(timer)` | 停止定时器 |
+| k_msgq | `K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` | 编译期定义静态消息队列 |
+| k_msgq | `k_msgq_put(msgq, data, timeout)` / `k_msgq_get(msgq, data, timeout)` | 投递/取出消息，ISR 中 timeout 只能 `K_NO_WAIT` |
+| k_msgq | `k_msgq_num_used_get(msgq)` | 当前已占用槽位数（队列水位） |
+| k_event | `K_EVENT_DEFINE(name)` / `k_event_post(event, mask)` | 定义事件对象 / 置位事件位，线程与 ISR 均可调用 |
+| k_event | `k_event_wait(event, events, wait_all, timeout)` | 等待事件位组合，返回命中位图或 0 |
+| pwm | `pwm_set_dt(spec, period, pulse)` | 设置 PWM 周期与脉宽，单位均为纳秒 |
+
+### 陷阱清单
+
+:::danger[expiry 回调在 ISR 上下文]
+- `k_timer` 的 expiry 回调由系统时钟中断触发，回调内禁止阻塞：`k_msgq_put` 只能传 `K_NO_WAIT`（队列满即失败），任何睡眠/等待都是致命错误
+- 采样、滤波、决策等重活一律交给线程；回调保持"读数 → 投递"两步以内
+:::
+
+:::warning[队列满策略与纳秒单位]
+- 消息队列满时的策略（丢弃最新/覆盖最旧/拉长周期）要提前设计，不能在中断里等待腾空间
+- `pwm_set_dt` 的 `period`/`pulse` 单位是纳秒：25% 占空比应写 `pulse = period / 4`，直接传 25 是最常见的错误
+:::
+
+:::success[native_sim 可直接验证]
+下例只依赖内核原语，不依赖任何芯片硬件：`west build -b native_sim` 后运行 `./build/zephyr/zephyr.exe`，观察"k_timer 周期触发 → ISR 投递 → 线程消费控制"的最小闭环（风扇控制以打印代替 `pwm_set_dt`）。
+:::
+
+```c
+#include <zephyr/kernel.h>
+
+struct sample {
+    int16_t temp;
+};
+
+/* 采样通道：8 条消息，4 字节对齐 */
+K_MSGQ_DEFINE(temp_q, sizeof(struct sample), 8, 4);
+
+/* 2) expiry 在 ISR 上下文：只读数 + 投递 */
+static void sample_expiry(struct k_timer *timer)
+{
+    static int16_t fake_temp = 45;
+    struct sample s = { .temp = fake_temp++ };
+
+    k_msgq_put(&temp_q, &s, K_NO_WAIT);
+}
+K_TIMER_DEFINE(sample_timer, sample_expiry, NULL);
+
+/* 3) 专职线程：阻塞消费，执行"风扇控制" */
+static void thermal_loop(void *p1, void *p2, void *p3)
+{
+    struct sample s;
+
+    for (;;) {
+        k_msgq_get(&temp_q, &s, K_FOREVER);
+        /* 实际项目中此处按控制算法调 pwm_set_dt(&fan, period, pulse) */
+        printk("temp=%d C -> adjust fan\n", s.temp);
+    }
+}
+K_THREAD_DEFINE(thermal_tid, 1024, thermal_loop, NULL, NULL, NULL, 5, 0, 0);
+
+int main(void)
+{
+    /* 1) 周期采样：500ms 后首触，此后每 1s 一次 */
+    k_timer_start(&sample_timer, K_MSEC(500), K_MSEC(1000));
+    return 0;
+}
+```
+
+中断约束、定时器与线程全解见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；k_msgq/k_event 与其他 IPC 的选型决策表见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)；PWM 等 `*_dt` 驱动 API 见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)。
+
 ## 智能散热模式 (ITS)
 
 系统定义 8 种智能散热（ITS）模式（`ITS_MODE_INDEX` 枚举），由主机通过 ACPI 或 EC 自主选择：
@@ -25,6 +114,10 @@ description: 风扇与热管理——智能散热模式 ITS、风扇控制算法
 1. 判断 `newMode != CURRENT_ITS_MODE`，若相同则直接返回
 2. 调用 `exit_its_mode(current)` 执行当前模式的退出清理
 3. 调用 `enter_its_mode(newMode)` — 更新 `CURRENT_ITS_MODE` → 调用平台特定的 `fan_instance.update_its_mode()` → 通过 `notify_subsystems(EC_EVENT_ITS_MODE_CHANGE)` 广播模式切换事件
+
+:::note[上游对应]
+`notify_subsystems(EC_EVENT_*)` 系统事件广播直接构建在 `k_event` 原语上：广播方 `k_event_post()`，子系统线程 `k_event_wait()` 检查命中位图，选型决策表见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+:::
 
 ## 风扇控制算法
 
@@ -50,6 +143,10 @@ description: 风扇与热管理——智能散热模式 ITS、风扇控制算法
 - 正常模式：使用 `Fan1RPM` / `Fan2RPM`（由热管理策略或 ACPI 设置），`EXTREME_COOLING` 标志可提升目标值
 - 调试模式：使用 `DebugFan1RPMT` / `DebugFan2RPMT`（可通过 Shell 命令覆盖）
 
+:::note[上游对应]
+"Shell 命令覆盖"对应上游 `CONFIG_SHELL` 子系统的命令行能力（无需自研命令解析器），见 [子系统与日志](/docs/zephyr-kernel/08_subsystems)。
+:::
+
 系统事件响应（`fan_sys_event()`）：
 - `EC_EVENT_ENTER_OS`：调用平台特定操作事件，重新进入当前 ITS 模式（刷新风扇策略）
 - `EC_EVENT_SYSTEM_S3_S0` / `EC_EVENT_SYSTEM_S5_S0`：调用平台操作事件（从睡眠恢复后重新初始化风扇）
@@ -60,6 +157,10 @@ description: 风扇与热管理——智能散热模式 ITS、风扇控制算法
 CPU 温度读取路径因平台而异：
 - Intel 平台：通过 PECI（Platform Environment Control Interface）读取 CPU 温度，同时检查 dGPU 温度，当温度变化超过 `CPU_TEMP_ALERT_DELTA`（3°C）时入队 `SCI_THERMAL` 通知主机
 - AMD 平台：通过 I2C 传感器读取，计算滑动平均值
+
+:::note[上游对应]
+I2C/ADC 温度传感器读取对应上游 `i2c_write_read_dt()` / `adc_read_dt(spec, ...)` 等标准 `*_dt` 驱动 API，见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)。
+:::
 
 PCH 温度通过 eSPI OOB 通道发送消息给 PCH 获取，同样使用滑动平均值（10 个样本窗口 `TEMP_AVG_CNT = 10`）。
 
@@ -83,6 +184,10 @@ PCH 温度通过 eSPI OOB 通道发送消息给 PCH 获取，同样使用滑动�
 `thermalmgmt_thread` 的运行周期根据系统状态而不同：
 - Modern Standby（CS）模式：以 8 秒周期运行（大幅降低功耗）
 - 正常模式：以配置的标准周期运行
+
+:::note[上游对应]
+`thermalmgmt_thread` 对应上游 `K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` 静态线程定义模式；"Modern Standby 8s / 正常标准周期"的变周期运行在线程内按系统状态选择节拍实现，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
 
 每个周期执行：`manage_fan_process()` → `thermal_sys_event()` → `manage_cpu_thermal()` → `manage_gpu_thermal()` → `manage_pch_temperature()`，每 10 个周期额外执行 `adc_thermal_sensors_update()` 和 `i2c_thermal_sensors_update()`。
 

@@ -5,6 +5,102 @@ description: 以电池电量计为例，从零新增一个功能模块——目�
 
 以"电池电量计（Fuel Gauge）"模块为例，演示从零到一在 EC 固件中新增一个自定义功能模块的完整流程。这个模式适用于任何新增的 EC 应用模块。
 
+## Zephyr 机制基础：静态线程、SYS_INIT 与模块间通信
+
+EC 的"功能模块"在上游 Zephyr 中没有专门的框架原语——它由三类内核机制拼装而成，理解了这三件事，任何模块骨架都能从上游语义自行推导出来：
+
+**静态线程**：`K_THREAD_DEFINE` 在编译期就为模块工作线程分配线程控制块与栈（`K_THREAD_STACK_DEFINE`），内核启动时自动就绪，`delay` 参数决定是立即运行还是等待后续启动。与 `k_thread_create` 动态创建相比，静态定义零运行时内存分配，对象生命周期与固件同生共死，是 EC 常驻模块的首选。
+
+**SYS_INIT 初始化**：`SYS_INIT(fn, level, prio)`（init.h，稳定 API）把一个函数注册进内核启动序列，按 `EARLY` → `PRE_KERNEL_1/2` → `POST_KERNEL` → `APPLICATION` 的级别顺序执行、同级内按 `prio` 升序，函数返回 0 即视为初始化成功。"模块 init 入口"的上游本质就是一个 APPLICATION 级初始化函数。
+
+**模块间通信**：`k_sem` 信号量用于"事件发生了 / 资源可用"的计数通知；`k_msgq` 定长消息队列在线程间传数据副本——值传递、内部自带互斥、支持阻塞等待，适合"采样生产者 → 处理消费者"式的模块解耦。
+
+| API | 签名 | 说明 |
+|-----|------|------|
+| `K_THREAD_DEFINE` | `K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` | 编译期静态定义线程 |
+| `K_THREAD_STACK_DEFINE` | `K_THREAD_STACK_DEFINE(sym, size)` | 定义线程栈 |
+| `K_THREAD_STACK_SIZEOF` | `K_THREAD_STACK_SIZEOF(stack)` | 取栈大小 |
+| `k_thread_create` | `k_thread_create(new_thread, stack, stack_size, entry, p1, p2, p3, prio, options, delay)` | 运行期动态创建线程 |
+| `k_thread_join` | `k_thread_join(thread, timeout)` | 等待线程退出 |
+| `k_thread_abort` | `k_thread_abort(thread)` | 立即终止线程，不释放线程所持资源 |
+| `SYS_INIT` | `SYS_INIT(fn, level, prio)` | 注册启动期初始化函数 |
+| `K_SEM_DEFINE` | `K_SEM_DEFINE(name, initial, limit)` | 静态定义信号量 |
+| `k_sem_give` / `k_sem_take` | `k_sem_give(sem)` / `k_sem_take(sem, timeout)` | 释放 / 获取信号量，ISR 中只能 `K_NO_WAIT` |
+| `K_MSGQ_DEFINE` | `K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` | 静态定义消息队列 |
+| `k_msgq_init` | `k_msgq_init(msgq, buffer, msg_size, max_msgs)` | 动态初始化消息队列 |
+| `k_msgq_put` | `k_msgq_put(msgq, data, timeout)` → `0` / `-EAGAIN` | 放入消息，队满且超时返回 -EAGAIN |
+| `k_msgq_get` | `k_msgq_get(msgq, data, timeout)` | 取出消息 |
+| `k_msgq_purge` | `k_msgq_purge(msgq)` | 清空队列 |
+| `k_msgq_num_used_get` | `k_msgq_num_used_get(msgq)` | 当前已用槽位数 |
+
+:::danger
+`k_thread_abort()` 立即终止线程，但**不释放线程持有的资源**（互斥锁、信号量占位、堆内存都会悬空）。停用模块线程时应先让线程自行退出主循环，再用 `k_thread_join()` 收尾，不要随手 abort。
+:::
+
+:::warning
+ISR 中调用 `k_sem_take()` 只能传 `K_NO_WAIT`，阻塞等待会触发断言；中断侧用 `k_sem_give()` 唤醒，处理逻辑交给线程。
+:::
+
+:::warning
+`k_msgq_put()` 在队满且超时到期时返回 `-EAGAIN`：生产者必须检查返回值并决定重试或丢弃，静默丢消息是模块间通信最常见的缺陷。
+:::
+
+:::success
+优先用 `K_THREAD_DEFINE` / `K_SEM_DEFINE` / `K_MSGQ_DEFINE` 静态定义——编译期确定、无需释放。配合 `CONFIG_THREAD_STACK_INFO` 与 `CONFIG_INIT_STACKS` 可在运行期统计线程栈真实用量，为缩栈提供依据。
+:::
+
+最小可跑示例（native_sim，纯内核逻辑，不依赖任何硬件）：一个"初始化投递 → 队列 → 线程消费"的模块骨架。
+
+```c
+#include <zephyr/kernel.h>
+#include <zephyr/init.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(fg_demo, LOG_LEVEL_INF);
+
+/* 模块间通信：int 消息、8 个槽位、4 字节对齐 */
+K_MSGQ_DEFINE(fg_queue, sizeof(int), 8, 4);
+
+/* 模块工作线程：编译期静态定义，栈 1024 字节，优先级 7，启动即运行 */
+static void fg_thread(void *p1, void *p2, void *p3)
+{
+    int percent = 0;
+
+    ARG_UNUSED(p1);
+    ARG_UNUSED(p2);
+    ARG_UNUSED(p3);
+    while (1) {
+        /* K_FOREVER：无消息时线程挂起，不占 CPU */
+        k_msgq_get(&fg_queue, &percent, K_FOREVER);
+        LOG_INF("battery sample: %d%%", percent);
+    }
+}
+
+K_THREAD_DEFINE(fg_thread_id, 1024, fg_thread, NULL, NULL, NULL, 7, 0, 0);
+
+/* 模块初始化入口：APPLICATION 级，内核启动末段自动执行 */
+static int fg_init(void)
+{
+    int sample = 75;
+    int ret = k_msgq_put(&fg_queue, &sample, K_NO_WAIT);
+
+    if (ret != 0) {
+        LOG_WRN("queue full, sample dropped");
+    }
+    LOG_INF("fuel gauge module ready");
+    return 0;
+}
+
+SYS_INIT(fg_init, APPLICATION, 50);
+```
+
+```bash
+west build -b native_sim
+./build/zephyr/zephyr.exe
+```
+
+深入阅读：线程、同步原语与中断上下文全解见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；静态线程对象与栈的内存归属、栈测量方法见 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)；`k_msgq` 与 `k_poll`、zbus 等异步机制的选型对比见 [异步消息](/docs/zephyr-kernel/13_async_messaging)。
+
 ## 第1步：创建模块目录
 
 在 `app/` 下新建子目录：
@@ -29,6 +125,10 @@ int fuel_gauge_get_voltage_mv(void);
 
 `app/fuel_gauge/fuel_gauge.c` —— 实现文件，通过 ADC 读取电池电压并结合放电曲线计算电量百分比，内部使用 `adc_read()` 和线程定时采样。
 
+:::note[上游对应]
+"线程定时采样"对应 Zephyr 的静态线程模式——`K_THREAD_DEFINE` 编译期定义、启动期自动就绪，线程与调度原理见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
+
 ## 第3步：添加 Kconfig 选项
 
 在 `app/fuel_gauge/Kconfig` 中定义：
@@ -41,6 +141,10 @@ config FUEL_GAUGE
     help
       Enable battery fuel gauge monitoring module.
 ```
+
+:::note[上游对应]
+`CONFIG_FUEL_GAUGE` 属 Zephyr 全局 `CONFIG_*` 命名空间，Kconfig 语法与依赖求解见 [Kconfig 配置系统](/docs/zephyr-kernel/06_config_system)。
+:::
 
 ## 第4步：把模块 Kconfig 挂载进配置树
 
@@ -67,5 +171,9 @@ CONFIG_FUEL_GAUGE=y
 ```
 
 重新运行 `west build` 即可将模块编译进固件。
+
+:::note[上游对应]
+`prj.conf` 的赋值按 Zephyr 覆盖链合并生效（`default` → 板级 defconfig → prj.conf → 命令行），详见 [Kconfig 配置系统](/docs/zephyr-kernel/06_config_system)。
+:::
 
 关键要点：遵循上述五件套模式（Kconfig + Kconfig 挂载 + CMakeLists + 头文件 + 源文件），确保新增模块与系统构建体系无缝集成。

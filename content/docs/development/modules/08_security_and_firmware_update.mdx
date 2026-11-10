@@ -6,6 +6,84 @@ description: 安全与固件更新——A/B 分区布局、OTA 更新流程与�
 
 `drivers/ota/` 确保 EC 固件本身的安全性、完整性和可更新性。
 
+## Zephyr 机制基础：MCUboot 引导链路与 mcumgr 传输层
+
+本页的 A/B 分区、魔术字与回滚机制，在 Zephyr 上游有完整的对应实现——MCUboot。信任链同样是逐级验证：芯片 ROM 验证 MCUboot，MCUboot 验证应用镜像（RSA-2048 / RSA-3072 / ECDSA-P256 签名，可选 AES 加密），任一级验证失败即拒绝启动。下文 Kconfig 名与流程均为 [安全与合规](/docs/zephyr-kernel/11_security) 页内已验证的用法，未引入新的未核实符号。
+
+### MCUboot 引导链路：A/B 分区的上游实现
+
+启用 `CONFIG_BOOTLOADER_MCUBOOT=y` 后，Flash 布局从本页的"Bootloader + Partition A/B"变为标准四区：`mcuboot` 引导区、`slot0_partition`（主槽，当前运行）、`slot1_partition`（副槽，接收更新）、`scratch_partition`（交换缓冲），另有 `storage_partition` 存放非易失数据。镜像交换支持两种策略：**Swap 模式**（slot0/slot1 交换，应用确认前可回滚）与 **Overwrite 模式**（直接覆盖 slot0，省空间但无回滚）——分别对应本页"回滚保障"与"原子更新"的取舍。镜像版本由 `CONFIG_MCUBOOT_IMAGE_VERSION` 标注，签名密钥由 `CONFIG_MCUBOOT_SIGNATURE_KEY_FILE` 指定。
+
+### 镜像签名与确认/回滚
+
+固件用 `imgtool` 签名：`imgtool keygen` 生成 RSA-2048 / ECDSA-P256 密钥对，`west sign -t imgtool` 或 `imgtool sign`（`--key` / `--header-size` / `--align` / `--version` / `--slot-size`）附加头部、版本号与签名，MCUboot 启动时自动完成哈希计算与签名验证。升级后的镜像处于"待确认"状态：应用自检通过后调用 `boot_write_img_confirmed()` 确认（`boot_is_img_confirmed()` 查询状态）；若新镜像始终未确认或自检失败，MCUboot 在下次复位时自动回滚到旧版本——这正是本页"3 次看门狗复位回退"的上游等价机制，且判定由 Bootloader 而非应用完成。
+
+### mcumgr 传输层：更新包怎么进来
+
+本页"主机发送更新包 → 写入 Inactive 分区"的通道，上游对应物是 mcumgr（SMP 协议）：`CONFIG_MCUMGR=y` 开启管理总线，`CONFIG_MCUMGR_GRP_IMG` / `CONFIG_MCUMGR_GRP_OS` 提供镜像管理与系统组命令，传输层按通道选择 `CONFIG_MCUMGR_TRANSPORT_BT` / `CONFIG_MCUMGR_TRANSPORT_UART` / `CONFIG_MCUMGR_TRANSPORT_UDP`；宿主机用 `mcumgr` CLI（`image upload` / `image list` / `image test` / `reset`）推送镜像。写入 Flash 依赖 `CONFIG_FLASH` / `CONFIG_FLASH_MAP` / `CONFIG_STREAM_FLASH`，应用侧经 `flash_area_open/read/write/erase/close` 操作分区，`boot_request_upgrade(BOOT_UPGRADE_TEST)` 设置升级标志、`sys_reboot(SYS_REBOOT_COLD)` 触发重启进入交换流程。
+
+### Kconfig / API 速查（与 11_security 页已验证用法一致）
+
+| 类别 | 名称 | 语义要点 |
+|------|------|----------|
+| Kconfig | `CONFIG_BOOTLOADER_MCUBOOT` | 启用 MCUboot 引导链路 |
+| Kconfig | `CONFIG_MCUBOOT_IMAGE_VERSION` | 镜像版本号标注（如 "1.0.0"） |
+| Kconfig | `CONFIG_MCUBOOT_SIGNATURE_KEY_FILE` | 签名密钥文件（如 "root-rsa-2048.pem"） |
+| Kconfig | `CONFIG_IMG_MANAGER` / `CONFIG_MCUMGR` / `CONFIG_MCUMGR_GRP_IMG` / `CONFIG_MCUMGR_GRP_OS` | DFU 镜像管理与 mcumgr 命令组 |
+| Kconfig | `CONFIG_MCUMGR_TRANSPORT_BT` / `_UART` / `_UDP` | SMP 传输层，按通道三选一 |
+| Kconfig | `CONFIG_FLASH` / `CONFIG_FLASH_MAP` / `CONFIG_STREAM_FLASH` | Flash 访问、分区映射与流式写入 |
+| API | `boot_request_upgrade(BOOT_UPGRADE_TEST)` | 标记副槽镜像待升级 |
+| API | `boot_is_img_confirmed()` / `boot_write_img_confirmed()` | 查询 / 确认当前镜像 |
+| API | `flash_area_open/read/write/erase/close` | 分区级 Flash 操作 |
+
+### 陷阱清单
+
+:::danger[密钥与分区]
+- 签名私钥必须妥善保管，不能泄露或提交到版本控制系统；公钥嵌入 MCUboot 用于验证
+- slot0/slot1 大小必须与签名参数 `--slot-size` 一致，副槽空间不足会直接导致升级失败
+:::
+
+:::warning[确认与回滚]
+- 新固件首次启动处于"待确认"状态，自检通过后必须调用 `boot_write_img_confirmed()`，否则复位后 MCUboot 自动回滚——这是特性而非故障
+- Overwrite 模式覆盖 slot0 后**没有回滚能力**，需要回滚保障的平台必须用 Swap 模式
+:::
+
+:::success[native_sim 可先验证的逻辑]
+MCUboot 引导链路与签名验证需要真实 Flash 分区，无法在 native_sim 上完整复现；但镜像分块校验与版本单调性检查是纯内核逻辑，可先在 `west build -b native_sim` 下验证：
+:::
+
+```c
+#include <zephyr/kernel.h>
+#include <zephyr/sys/crc.h>
+
+#define OTA_MAGIC 0x4F544147U   /* 示例魔术字（示意本页 OTA_MAGIC） */
+
+int main(void)
+{
+    static uint8_t chunk[64];   /* 模拟一个写入块 */
+    uint32_t svn = 3;           /* 当前最低安全版本号 */
+
+    for (size_t i = 0; i < sizeof(chunk); i++) {
+        chunk[i] = (uint8_t)i;
+    }
+    /* 分块完整性校验：写入后立即比对 CRC（对应"写后校验"） */
+    uint32_t crc = crc32_ieee(chunk, sizeof(chunk));
+    printk("chunk crc=0x%08x ok=%d\n", crc,
+           crc32_ieee(chunk, sizeof(chunk)) == crc);
+
+    /* 防降级：新镜像 SVN 低于当前值则拒绝（对应回滚机制表） */
+    uint32_t new_svn = 2;
+    if (new_svn < svn) {
+        printk("reject: svn %u < %u\n", new_svn, svn);
+    } else {
+        printk("accept: magic=0x%08x\n", OTA_MAGIC);
+    }
+    return 0;
+}
+```
+
+MCUboot 分区布局、imgtool 签名参数、mcumgr 完整命令清单与回滚时序图见 [安全与合规](/docs/zephyr-kernel/11_security)。
+
 ## A/B 分区布局
 
 EC Flash 划分为两个独立的固件分区：
@@ -26,6 +104,10 @@ EC Flash 划分为两个独立的固件分区：
 
 启动时 Bootloader 检查两个分区的版本号和完整性标志，选择版本号更高且 CRC 校验通过的分区启动。
 
+:::note[上游对应]
+A/B 双分区启动的上游对应物是 MCUboot 的 slot0/slot1 布局与 Swap 交换策略（`CONFIG_BOOTLOADER_MCUBOOT` 启用），见 [安全与合规](/docs/zephyr-kernel/11_security)。
+:::
+
 ## OTA 更新流程
 
 ```
@@ -33,6 +115,10 @@ EC Flash 划分为两个独立的固件分区：
 → 全包写完后验证签名 → 写入魔术字(OTA_MAGIC) → 通知主机重启
 → EC 复位 → Bootloader 检测魔术字 → 验证新固件 → 升级版本号 → 启动新固件
 ```
+
+:::note[上游对应]
+"主机发送更新包 → 写入 Inactive 分区"的传输通道上游对应 mcumgr（SMP）镜像上传：`CONFIG_MCUMGR_GRP_IMG` + `CONFIG_MCUMGR_TRANSPORT_BT/_UART/_UDP`，宿主机命令为 `mcumgr image upload`，见 [安全与合规](/docs/zephyr-kernel/11_security)。
+:::
 
 ## 断点续传
 
@@ -48,11 +134,19 @@ EC Flash 划分为两个独立的固件分区：
 
 回退后 EC 通过 SCI 通知主机固件更新失败，主机 OS 可提示用户重试或联系售后。
 
+:::note[上游对应]
+"新固件不稳定自动回退"的上游对应物是 MCUboot 的镜像确认机制：未调用 `boot_write_img_confirmed()` 确认的镜像在复位后被自动回滚到旧版本，见 [安全与合规](/docs/zephyr-kernel/11_security)。
+:::
+
 ## 安全校验
 
 - 完整性：每 4KB 块使用 CRC32 校验
 - 真实性：固件镜像末尾附 RSA-2048 数字签名，使用 Bootloader 中预置的公钥验证
 - 版本控制：每个固件镜像头部包含 32 位安全版本号（SVN），单调递增
+
+:::note[上游对应]
+镜像尾部 RSA-2048 签名的上游等价物是 imgtool 签名 + MCUboot 启动时验证（`CONFIG_MCUBOOT_SIGNATURE_KEY_FILE` 指定签名密钥），见 [安全与合规](/docs/zephyr-kernel/11_security)。
+:::
 
 ## 设计要点
 

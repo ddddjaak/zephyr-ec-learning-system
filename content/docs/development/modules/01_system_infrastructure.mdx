@@ -13,9 +13,106 @@ description: 系统基础设施——设备抽象层 ec_dev、消息队列封装
 | `ec_structure` | 通用数据结构与等待工具 | 轮询等待 |
 | `sysevent` | 系统事件广播 | 一对多广播 |
 
+## Zephyr 机制基础：消息队列、事件对象与静态线程
+
+本页的四大框架组件没有一个是"从零发明"的内核机制——`ec_queue`、`sysevent`、`task_info[]` 静态线程表、`devList[]` 设备表分别构建在 Zephyr 的消息队列、事件对象、静态线程定义与设备驱动模型之上。先掌握这四个上游原语，框架代码就可以直接当"应用层薄封装"来读。
+
+### 消息队列（struct k_msgq）：ec_queue 的底座
+
+Zephyr 的消息队列是编译期定长、值拷贝语义的线程间通信原语：`K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` 在静态内存中分配队列缓冲区，生产者用 `k_msgq_put()` 放入一条固定大小的消息副本，消费者用 `k_msgq_get()` 取出；队列满或空时可带超时阻塞（`K_NO_WAIT` / `K_MSEC(ms)` / `K_FOREVER`）。`ec_queue` 的滑动窗口移动平均就是"队列容量 = 窗口大小，入队新样本、出队最旧样本"的直接应用，框架本身没有引入任何新的同步原语。
+
+### 事件对象（struct k_event）：sysevent 的底座
+
+`k_event` 是 32 位位掩码事件对象：`k_event_post(event, mask)` 置位事件位（线程与 ISR 均可调用），`k_event_wait(event, events, wait_all, timeout)` 等待或检查指定位，返回命中位图或 0。这正是"一对多广播"的上游实现——本页 `sysevent` 的 `struct SysEvent` 持有 10 个 `struct k_event` 对象（每个子系统一个），广播方逐个 post，各子系统线程在自己的周期里非阻塞检查。`EC_EVENT_*` 的 BIT(n) 设计与 `k_event` 的位掩码语义一一对应。
+
+### 静态线程（K_THREAD_DEFINE）：task_info[] 的等价模式
+
+Zephyr 推荐的线程创建方式是编译期静态定义：`K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` 在链接期分配线程控制块与栈（栈可另用 `K_THREAD_STACK_DEFINE(sym, size)` 声明）。本方案 `task_info[]` 静态线程表 + `start_all_tasks()` 遍历创建，等价于把多个 `K_THREAD_DEFINE` 集中成一张表、运行期统一调 `k_thread_create()`——两种写法的线程三要素（入口函数、栈、优先级）逐项对应。
+
+### 设备控制：上游对应物是驱动模型 API
+
+`device_ioctl` / `device_ioctl_traversal` 属于本方案定制层，Zephyr 上游无此统一 IOCTL 分发 API。上游对应物是设备驱动模型：每个驱动暴露 `const struct device *` 实例与子系统 API（如 `gpio_pin_set()`、`i2c_write()`），配合 `DEVICE_DT_GET()` 在编译期按设备树节点获取设备句柄。`devList[]` 静态注册表的角色接近"设备句柄集合 + 框架统一分发收口"。
+
+### API 签名速查（Zephyr 3.7.0 已核实）
+
+| 原语 | API | 语义要点 |
+|------|-----|----------|
+| k_msgq | `K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` | 编译期定义静态消息队列 |
+| k_msgq | `k_msgq_put(msgq, data, timeout)` | 入队一条消息，队列满返回 -EAGAIN |
+| k_msgq | `k_msgq_get(msgq, data, timeout)` | 出队一条消息，队列空可阻塞 |
+| k_msgq | `k_msgq_purge(msgq)` | 清空队列 |
+| k_msgq | `k_msgq_num_used_get(msgq)` | 当前已占用槽位数 |
+| k_event | `K_EVENT_DEFINE(name)` | 编译期定义事件对象 |
+| k_event | `k_event_init(event)` | 运行期初始化事件对象 |
+| k_event | `k_event_post(event, mask)` | 置位事件位，线程/ISR 均可调用 |
+| k_event | `k_event_wait(event, events, wait_all, timeout)` | 等待事件位，返回命中位图或 0 |
+| k_thread | `K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` | 编译期静态定义线程 |
+| k_thread | `K_THREAD_STACK_DEFINE(sym, size)` | 声明线程栈 |
+| k_thread | `k_thread_create(new_thread, stack, stack_size, entry, p1, p2, p3, prio, options, delay)` | 运行期创建线程（task_info[] 路径） |
+
+### 陷阱清单
+
+:::danger[ISR 与超时的硬约束]
+- 阻塞类 API（`k_msgq_put/get`、带超时的 `k_event_wait`）在 ISR 上下文只能传 `K_NO_WAIT`，否则断言失败或行为未定义
+- 事件广播可能来自 VW 回调等中断上下文：广播方只应调用 `k_event_post`，带超时的 `k_event_wait` 留给线程
+:::
+
+:::warning[栈与优先级]
+- `K_THREAD_DEFINE` 的 stack_size 是线程栈的唯一来源，估算不足会栈溢出；开启 `CONFIG_THREAD_STACK_INFO` + `CONFIG_INIT_STACKS` 后用 `k_thread_stack_space_get(thread, &unused)` 实测余量
+- Zephyr 优先级数值越小优先级越高（负值为抢占式），不要把"大数值 = 高优先级"的 RTOS 习惯带进来
+:::
+
+:::success[native_sim 可直接验证]
+下例只依赖内核原语（不依赖任何芯片外设），`west build -b native_sim` 后运行 `./build/zephyr/zephyr.exe` 即可观察"滑动窗口 + 事件广播"的最小闭环。
+:::
+
+```c
+#include <zephyr/kernel.h>
+
+/* 滑动窗口：4 个 uint16_t 样本（队列容量即窗口大小），4 字节对齐 */
+K_MSGQ_DEFINE(win_q, sizeof(uint16_t), 4, 4);
+/* 事件对象：模块间广播 */
+K_EVENT_DEFINE(demo_evt);
+
+#define EVT_WINDOW_FULL BIT(0)
+
+static void push_sample(uint16_t s)
+{
+    uint16_t oldest;
+
+    /* 窗口满则先挤掉最旧样本，再入队新样本 */
+    if (k_msgq_put(&win_q, &s, K_NO_WAIT) != 0) {
+        k_msgq_get(&win_q, &oldest, K_NO_WAIT);
+        k_msgq_put(&win_q, &s, K_NO_WAIT);
+        printk("drop oldest=%u\n", oldest);
+    }
+}
+
+int main(void)
+{
+    uint32_t hit;
+
+    for (uint16_t i = 0; i < 6; i++) {
+        push_sample(i);
+    }
+    printk("window used=%u\n", k_msgq_num_used_get(&win_q));
+
+    k_event_post(&demo_evt, EVT_WINDOW_FULL);
+    hit = k_event_wait(&demo_evt, EVT_WINDOW_FULL, true, K_MSEC(100));
+    printk("event wait=0x%x\n", hit);
+    return 0;
+}
+```
+
+线程与同步原语全解见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；消息队列、事件对象与超时选型见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+
 ## 设备抽象层 (ec_dev)
 
 `ec_dev` 提供统一的设备 IOCTL 接口，上层模块无需直接操作硬件即可完成设备控制。
+
+:::note[上游对应]
+`ec_dev` 的"设备类型 + 处理函数 + 私有上下文"三件套对应 Zephyr 设备驱动模型（`const struct device *` 实例 + 子系统 API，设备经 `DEVICE_DT_GET()` 获取），详见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)。
+:::
 
 设备类型枚举（`DEV_TYPE`）共定义 16 种设备：
 
@@ -75,6 +172,10 @@ typedef struct dev {
 device_ioctl_traversal(SYS_IOCTL_POWER_STATE, &state, sizeof(state), NULL, 0);
 ```
 
+:::note[上游对应]
+`device_ioctl` / `device_ioctl_traversal` 为本方案定制层 API，Zephyr 上游无此接口；上游对应物是设备驱动 API 与 `DEVICE_DT_GET()` 静态获取设备实例，见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)。
+:::
+
 ## 消息队列封装 (ec_queue)
 
 `ec_queue` 基于 Zephyr `struct k_msgq` 提供滑动窗口移动平均滤波工具，用于平滑传感器读数（如温度、电压、电流）：
@@ -86,6 +187,10 @@ device_ioctl_traversal(SYS_IOCTL_POWER_STATE, &state, sizeof(state), NULL, 0);
 | `get_moving_ave_s16(msgq, data)` | int16_t | 16 位有符号数据滑动平均 |
 
 每个函数将新数据推入消息队列，计算并返回当前窗口内所有样本的算术平均值。窗口大小由 `struct k_msgq` 初始化时的容量决定，OEM 可根据传感器噪声特性调整。
+
+:::note[上游对应]
+`ec_queue` 是 `struct k_msgq` 的封装：队列容量即滑动窗口大小，`get_moving_ave_*` 的"推入新样本"对应 `k_msgq_put()` / `k_msgq_get()` 的入队出队，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
 
 ## 通用数据结构 (ec_structure)
 
@@ -106,6 +211,10 @@ bool wait_handler_per_cycle(WAIT_HANDLER handler, int cycle_ms, const void *ctx)
 ## 系统事件广播机制 (sysevent)
 
 EC 固件基于事件驱动模型实现模块间解耦。`sysevent` 模块是这一机制的核心——当系统状态发生关键变化（如电源状态切换、LID 开合、进入操作系统等），由事件产生方通过 `notify_subsystems()` 将事件广播给所有子系统，各子系统线程在自己周期内独立检查并响应。
+
+:::note[上游对应]
+`sysevent` 直接构建在 `k_event` 原语上：`notify_subsystems()` 对 10 个事件对象逐个执行 `k_event_post()`，子系统线程用 `k_event_wait()` 检查命中位图，见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+:::
 
 事件类型定义（`ec_event` 枚举，采用位掩码设计，每个事件占用独立的 bit 位）：
 

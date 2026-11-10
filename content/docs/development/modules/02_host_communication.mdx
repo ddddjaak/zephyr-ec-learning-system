@@ -6,6 +6,85 @@ description: SMC 主机接口——命令处理流程、SCI 中断管理与线�
 
 `app/smchost/` 是实现 EC 与主机 CPU 之间通信的核心模块，包含 24 个源文件，覆盖 ACPI 命令处理、SCI 中断管理、共享内存与电源协调。
 
+## Zephyr 机制基础：主机通信的内核底座
+
+smchost 的"接收 → 缓冲 → 分发"链路与共享内存窗口，全部落在三个上游内核原语上：消息队列（命令缓冲与工作项排队）、互斥锁/信号量（共享数据一致性）、线程优先级（主机响应的实时性）。先理解这三件事，再看 24 个源文件时就只剩下业务协议本身。
+
+### 命令分发：k_msgq 作缓冲层
+
+主机命令的到达是异步的（eSPI 事务/VW 回调触发），而命令处理必须在线程上下文完成（处理过程可能调用阻塞 API）。Zephyr 的标准做法是回调侧只做最少的事——把命令放入 `struct k_msgq` 或提交 `k_work`，由工作线程取出后串行分发。本页 `smchost_acpi_handler()` → `smchost_cmd_handler()` 的链路正是这个模式：接收层逐字节累积，分发层在 `smchost_thread` 中串行执行，天然避免并发处理两条主机命令；`k_msgq_num_used_get()` 可用来监控命令积压深度。
+
+### 共享内存一致性：EC 侧单写者 + 顺序约定
+
+共享内存窗口是 EC 与主机并发读写的同一块 SRAM。Zephyr 侧的一致性工具是 `k_mutex_lock()`（多字段复合更新时加锁，锁带优先级继承）；但主机不经过 Zephyr 调度器，跨核一致性真正依靠的是 EC 侧"先写数据体、后写标志位"的单向顺序约定与单变量的原子性——锁只保护 EC 侧多个写者之间的竞争。
+
+### 优先级：谁先响应主机
+
+主机命令有实时性要求（ACPI 读写若被淹没，OS 会卡在 EC 查询上）。Zephyr 以抢占式优先级调度解决：`smchost_thread` 的优先级应高于后台任务（日志打包、策略计算）；事件驱动模式下用 `k_sem_take(&acpi_lock, K_FOREVER)` 挂起等待唤醒，避免周期轮询空转占用 CPU。
+
+### API 签名速查（Zephyr 3.7.0 已核实）
+
+| 原语 | API | 语义要点 |
+|------|-----|----------|
+| k_msgq | `K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` | 编译期定义静态消息队列 |
+| k_msgq | `k_msgq_put(msgq, data, timeout)` | 入队，队列满返回 -EAGAIN |
+| k_msgq | `k_msgq_get(msgq, data, timeout)` | 出队，队列空可阻塞 |
+| k_msgq | `k_msgq_num_used_get(msgq)` | 排队深度（监控积压） |
+| k_sem | `K_SEM_DEFINE(name, initial, limit)` | 编译期定义计数信号量 |
+| k_sem | `k_sem_give(sem)` | 释放，线程/ISR 均可调用 |
+| k_sem | `k_sem_take(sem, timeout)` | 获取；ISR 中只能传 K_NO_WAIT |
+| k_mutex | `K_MUTEX_DEFINE(name)` | 编译期定义互斥锁 |
+| k_mutex | `k_mutex_lock(mutex, timeout)` | 加锁，带优先级继承 |
+| k_work | `K_WORK_DEFINE(work, handler)` | 定义工作项 |
+| k_work | `k_work_submit(work)` | 提交到系统工作队列（ISR 可用） |
+| k_timeout | `K_NO_WAIT` / `K_FOREVER` / `K_MSEC(ms)` | 阻塞类 API 的超时参数 |
+
+### 陷阱清单
+
+:::danger[中断上下文约束]
+- eSPI VW 回调、OOB 接收回调都在 ISR/中断上下文执行：只能调用 `k_msgq_put(…, K_NO_WAIT)`、`k_sem_give()`、`k_work_submit()` 这类非阻塞 API
+- 命令解析、SCI 入队等重活一律交给线程或工作队列，中断里只留"取数据 + 置标志"
+:::
+
+:::warning[共享内存一致性不能只靠锁]
+- `k_mutex_lock` 挡不住主机侧的读取——跨核数据必须遵守"先写数据体、后写标志位"的顺序，且标志位本身单字节原子
+- 中断上下文里 `k_msgq_put` 满时返回 -EAGAIN 而不是阻塞：必须处理入队失败（丢事件或计数告警），不能重试等待
+:::
+
+:::success[native_sim 可直接验证]
+下例模拟"回调置事件 → 队列缓冲 → 线程分发 + 共享状态加锁更新"的最小闭环，`west build -b native_sim` 即可运行，不依赖任何主机总线硬件。
+:::
+
+```c
+#include <zephyr/kernel.h>
+
+K_MSGQ_DEFINE(acpi_q, sizeof(uint8_t), 8, 1);   /* 命令缓冲队列 */
+K_MUTEX_DEFINE(shd_lock);                        /* 共享状态锁 */
+K_SEM_DEFINE(cmd_evt, 0, 1);                     /* "eSPI 回调"事件 */
+
+static uint8_t shd_flag;                         /* 模拟共享内存中的标志 */
+
+int main(void)
+{
+    uint8_t cmd = 0x80, got;
+
+    k_sem_give(&cmd_evt);                        /* 模拟中断上下文置事件 */
+
+    k_sem_take(&cmd_evt, K_FOREVER);             /* 工作线程被唤醒 */
+    if (k_msgq_put(&acpi_q, &cmd, K_NO_WAIT) == 0) {   /* ISR 侧只能 K_NO_WAIT */
+        if (k_msgq_get(&acpi_q, &got, K_FOREVER) == 0) {
+            k_mutex_lock(&shd_lock, K_FOREVER);
+            shd_flag = got;                      /* 先写数据、后置标志的顺序约定 */
+            printk("dispatched cmd=0x%x\n", shd_flag);
+            k_mutex_unlock(&shd_lock);
+        }
+    }
+    return 0;
+}
+```
+
+线程、信号量与互斥锁全解见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；队列、工作队列与消息机制选型见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+
 ## 命令处理流程
 
 主机通过 eSPI Peripheral Channel（模拟传统 LPC I/O 端口 0x62/0x66）向 EC 发送命令。EC 端的 `smchost_acpi_handler()` 负责从 ACPI 接口接收命令字节：
@@ -32,6 +111,10 @@ ACPI 标准命令码：
 
 SCI（System Control Interrupt）是 EC 通知主机有事件需处理的标准机制。EC 维护一个 SCI 事件队列，当 EC 检测到需要通知主机的事件时（如电池状态变化、LID 开合、热事件），将对应的 SCI 码入队并触发 eSPI Virtual Wire 上的 SCI 信号。
 
+:::note[上游对应]
+"SCI 事件队列"这类事件/命令缓冲的上游对应物是 `struct k_msgq`（入队/出队、容量上限、满时 `k_msgq_put()` 返回 -EAGAIN），队列选型详见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+:::
+
 系统定义了 40+ 个 SCI 事件码（`scicodes.h`），部分关键事件：
 
 | SCI 码 | 宏名称 | 触发条件 |
@@ -55,6 +138,10 @@ SCI（System Control Interrupt）是 EC 通知主机有事件需处理的标准�
 
 - 周期轮询模式：线程以固定周期（通过 `k_msleep(period)`）轮询 ACPI 接口状态。适用于不支持事件驱动唤醒的调试场景。
 
+:::note[上游对应]
+`k_sem_take(&acpi_lock, K_FOREVER)` 是 Zephyr 信号量原语 `k_sem_take(sem, timeout)` 的应用：唤醒方在线程/ISR 中调用 `k_sem_give()`，而 ISR 里获取信号量只能传 `K_NO_WAIT`，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
+
 ## 关键事件处理
 
 LID 处理（`smchost_lid_handler()`）：开盖时设置 `Lid_Act` 标志，清除键盘禁用标志，通知子系统 LID 打开事件，启用键盘控制器，入队 SCI_LID_Open 事件，若系统在 S3 则生成唤醒信号。合盖时执行反向操作。
@@ -71,6 +158,10 @@ EC 通过 eSPI Memory Channel 将指定 SRAM 区域映射到主机内存空间�
 - `CONFIG_CSCE250X_PERIPHERAL_HOST_SHD_MEM_ADDRESS`：主机命令共享内存窗口（默认 `0x2002F100`），用于自定义主机命令
 
 主机通过访问自身的 PCI 地址空间即可读写这些 EC SRAM 区域，eSPI/LPC Controller 自动转换为 Memory Cycle 映射到 EC。
+
+:::note[上游对应]
+共享内存窗口的 EC 侧一致性对应上游同步原语：多字段复合更新用 `k_mutex_lock()`（带优先级继承）保护，跨核顺序靠"先写数据、后置标志"的单写者约定，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
 
 ## 命令接收缓冲区管理
 
@@ -124,6 +215,10 @@ eSPI 协议定义了四个逻辑通道，各司其职：
 | Virtual Wire | 双向 | 边带信号（SLP_S3/S4/5、PLT_RST、SCI信号、SMI信号 等） | 通过 VW ISR 实时响应 |
 | OOB (Out-of-Band) | 双向 | MCTP 加密消息（ERPMC）、PCH 温度查询 | `CONFIG_ESPI_OOB_CHANNEL_RX_ASYNC` 异步接收 |
 | Flash | 从→主 | EC 访问共享 SPI Flash（通常用于系统固件更新） | `espihub_write_flash()` / `read_flash()` / `erase_flash()` |
+
+:::note[上游对应]
+VW 回调与 OOB 接收回调运行在 ISR 上下文，对应上游约束：中断里只能调用非阻塞 API（`k_msgq_put(…, K_NO_WAIT)`、`k_sem_give()`、`k_work_submit()`），重活交给线程或工作队列，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
 
 ## 回调注册体系
 

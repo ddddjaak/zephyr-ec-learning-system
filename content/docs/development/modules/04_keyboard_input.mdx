@@ -6,6 +6,103 @@ description: 键盘扫描与输入处理——矩阵扫描算法、去抖与扫�
 
 `drivers/keyboard/` 实现键盘矩阵扫描、键值转换和高级功能处理。
 
+## Zephyr 机制基础：按键输入的内核链路
+
+键盘输入由两条上游链路支撑：**中断链路**（按键的异步事件：GPIO 中断 → ISR → 后半处理）与**周期链路**（矩阵扫描的固定节拍）。先讲清四个上游原语——GPIO 中断与 ISR、k_work/k_msgq 后半处理、delayable work 的 reschedule 消抖——再看本页的扫描与去抖算法，就能逐点对应到内核机制。
+
+### GPIO 中断与 ISR：快进快出原则
+
+按键输入最底层的触发源是 GPIO 边沿中断。上游的注册链路是：`IRQ_CONNECT(irq, priority, handler, arg, flags)` 把中断服务程序（ISR）静态注册到中断向量表（GPIO 控制器驱动的中断入口同样由此而来），引脚侧再以 `gpio_pin_interrupt_configure_dt(spec, GPIO_INT_EDGE_TO_ACTIVE)` 使能"变为有效电平"的边沿触发。ISR 运行在中断上下文，**快进快出**是硬约束：只做读电平、记时间戳、投递轻量消息这类微秒级动作，一切可能阻塞或耗时的处理都推迟到线程上下文完成。
+
+### 后半处理：k_work 与 k_msgq 的分工
+
+ISR 里不能干重活，上游提供两条标准"后半处理"路径：
+
+- **k_work（工作项）**：ISR 调 `k_work_submit(work)` 把工作项提交到系统工作队列，handler 在 workqueue 线程上下文执行；系统工作队列全系统共享，handler 内同样禁止阻塞。
+- **k_msgq（消息队列）**：ISR 调 `k_msgq_put(msgq, data, K_NO_WAIT)` 投递按键事件，专职线程用 `k_msgq_get(msgq, data, timeout)` 取出处理；适合事件格式固定、需要缓冲的场景。
+
+本页键盘扫描是"周期节拍 + 事件上报"形态：扫描节奏来自周期调度，检测到的键变事件经队列交给上层做扫描码转换与键位映射。
+
+### 消抖：delayable work 的 reschedule 手法
+
+机械按键抖动窗口通常 5~20 ms，上游的经典消抖手法是**可延迟工作 + 无条件重排**：`K_WORK_DELAYABLE_DEFINE(work, handler)` 定义可延迟工作项，每次抖动边沿到来都调 `k_work_reschedule(dwork, delay)` 把截止时间**无条件重置**到"当前时刻 + delay"。抖动期间截止时间不断后移，只有电平稳定超过 delay、不再出现新边沿时确认回调才执行——本页"连续多次采样一致才确认"正是这一语义的多次采样变体。
+
+注意区分：`k_work_schedule(dwork, delay)` 对已 pending 的工作项是 no-op（不重置截止时间），不能用于消抖；`k_work_reschedule` 才是"每次都重置"的那一个。
+
+### API 签名速查（Zephyr 3.7.0 已核实）
+
+| 原语 | API | 语义要点 |
+|------|-----|----------|
+| irq | `IRQ_CONNECT(irq, priority, handler, arg, flags)` | 编译期静态注册 ISR 到中断向量表 |
+| irq | `irq_enable(irq)` | 使能中断线 |
+| gpio | `gpio_pin_configure_dt(spec, flags)` | 按设备树规格配置引脚方向/上下拉 |
+| gpio | `gpio_pin_interrupt_configure_dt(spec, GPIO_INT_EDGE_TO_ACTIVE)` | 使能"有效沿"边沿中断 |
+| gpio | `gpio_pin_get_dt(spec)` / `gpio_pin_set_dt(spec, value)` | 读/写引脚电平 |
+| k_work | `K_WORK_DEFINE(work, handler)` / `k_work_submit(work)` | 定义并提交系统工作队列工作项 |
+| k_work | `K_WORK_DELAYABLE_DEFINE(work, handler)` | 定义可延迟工作项 |
+| k_work | `k_work_schedule(dwork, delay)` | 仅未 pending 时调度（已 pending 则 no-op） |
+| k_work | `k_work_reschedule(dwork, delay)` | 无条件重置截止时间——消抖正是此语义 |
+| k_work | `k_work_cancel_sync(work, &sync)` | 同步取消，等待回调退出 |
+| k_msgq | `K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` | 编译期定义静态消息队列 |
+| k_msgq | `k_msgq_put(msgq, data, timeout)` / `k_msgq_get(msgq, data, timeout)` | 投递/取出消息，ISR 中 timeout 只能 `K_NO_WAIT` |
+
+### 陷阱清单
+
+:::danger[ISR 上下文禁阻塞]
+- 中断上下文中带超时的阻塞 API 只能传 `K_NO_WAIT`：`k_msgq_put` 队列满会直接失败、消息被丢弃
+- 睡眠、`K_FOREVER` 等待、获取互斥锁在 ISR 中是致命错误
+:::
+
+:::warning[系统工作队列是共享资源]
+- `k_work_submit` 的 handler 跑在全系统共享的系统工作队列上，handler 内禁止阻塞或耗时处理，否则拖慢所有提交者
+- 长处理链应转投专职线程（经 k_msgq）或自建 workqueue
+:::
+
+:::warning[消抖原语选错则形同虚设]
+- 消抖必须用 `k_work_reschedule`（无条件重置截止时间）；误用 `k_work_schedule` 时确认点在第一次边沿后就固定不变，抖动照样被当成有效按键
+:::
+
+:::success[native_sim 可直接验证]
+下例只依赖内核原语与 GPIO 模拟层，不依赖任何芯片硬件：`west build -b native_sim` 后运行 `./build/zephyr/zephyr.exe` 即可观察"边沿中断 → 消抖确认 → 队列上报"的最小闭环。GPIO 由 `CONFIG_GPIO_EMUL` 提供模拟控制器（prj.conf 需 `CONFIG_GPIO=y` 与 `CONFIG_GPIO_EMUL=y`），overlay 中把 `sw0` 别名指向模拟控制器节点。
+:::
+
+```c
+#include <zephyr/kernel.h>
+#include <zephyr/drivers/gpio.h>
+
+static const struct gpio_dt_spec key = GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
+static struct gpio_callback key_cb;
+
+/* 键变事件：1 字节电平值，容量 8，4 字节对齐 */
+K_MSGQ_DEFINE(key_q, sizeof(uint8_t), 8, 4);
+
+/* 3) 消抖确认：电平稳定超过 20ms 无新边沿才执行 */
+static void key_confirm(struct k_work *work)
+{
+    uint8_t level = gpio_pin_get_dt(&key) ? 1 : 0;
+
+    k_msgq_put(&key_q, &level, K_NO_WAIT);   /* 专职线程负责消费 */
+}
+K_WORK_DELAYABLE_DEFINE(key_debounce, key_confirm);
+
+/* 2) ISR：快进快出，只做一次无条件重排 */
+static void key_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+{
+    k_work_reschedule(&key_debounce, K_MSEC(20));
+}
+
+int main(void)
+{
+    gpio_pin_configure_dt(&key, GPIO_INPUT);
+    gpio_pin_interrupt_configure_dt(&key, GPIO_INT_EDGE_TO_ACTIVE);
+    gpio_init_callback(&key_cb, key_isr, BIT(key.pin));
+    gpio_add_callback(key.port, &key_cb);    /* 中断入口由驱动经 IRQ_CONNECT 注册 */
+    return 0;
+}
+```
+
+中断（IRQ_CONNECT/ISR 约束）与系统工作队列（workqueue）全解见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；GPIO 等 `*_dt` 驱动 API 与设备树绑定见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)；k_msgq 与其他 IPC 原语的选型对比见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+
 ## 矩阵扫描算法
 
 EC 以固定周期（毫秒级，由 Kconfig 配置）对键盘矩阵进行扫描。扫描原理为行列扫描法：
@@ -14,9 +111,17 @@ EC 以固定周期（毫秒级，由 Kconfig 配置）对键盘矩阵进行扫�
 3. 交叉比对当前扫描结果与上一次结果，检测电平变化
 4. 电平从高变低 → 按键按下事件；电平从低变高 → 按键释放事件
 
+:::note[上游对应]
+"固定周期（毫秒级，由 Kconfig 配置）"对应上游 Kconfig 机制：扫描周期等参数在编译期由 CONFIG_* 选项注入，机制详解见 [Kconfig 与配置系统](/docs/zephyr-kernel/06_config_system)。
+:::
+
 ## 去抖与按键状态
 
 采用软件多次采样确认的去抖算法——对每个检测到变化的按键进行连续多次采样，结果一致才确认键位状态变化。去抖参数（采样次数、间隔时间）应可配置，以适配不同机械键盘的特性。
+
+:::note[上游对应]
+"连续多次采样一致才确认"在 Zephyr 中的标准等价物是 delayable work + `k_work_reschedule()`（每次边沿无条件重置截止时间，稳定超时才确认），见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms) 的 workqueue 小节。
+:::
 
 ## 扫描码转换
 
@@ -45,6 +150,10 @@ ROW7   [K112][K113][K114]... [K127]
 - 行引脚（ROW0~ROW7）配置为上拉输入，读取按键状态
 - 每个交叉点连接一个机械按键开关，按下时接通行列
 - 未使用的键位（如 > 128 键的矩阵空闲位置）在键位映射表中标记为 `KEY_NONE`
+
+:::note[上游对应]
+行列引脚的"推挽输出 / 上拉输入"配置对应上游 `gpio_pin_configure_dt(spec, flags)`，按键中断触发对应 `gpio_pin_interrupt_configure_dt()`，见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model) 的 GPIO API 小节。
+:::
 
 ## Ghost Key 检测与处理
 

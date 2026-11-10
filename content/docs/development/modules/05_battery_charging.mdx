@@ -6,6 +6,93 @@ description: 电池与充电控制——电池状态机、数据采集与插拔�
 
 `app/battery/` 和 `app/charge/` 负责管理系统电池的运行状态和充放电过程。电池子系统通过 SMBus 接口（I2C0，地址 0x16）与智能电池包通信读取状态信息，充电子系统通过 I2C0（地址 0x6B）与 BQ25720 充电 IC 通信控制充放电参数。
 
+## Zephyr 机制基础：周期采样任务的内核支撑
+
+电池与充电子系统的形态，是固件里最典型的**周期采样任务**：专职线程按固定节奏轮询 I2C/SMBus 器件，把读回的数据喂给状态机。上游 Zephyr 用三类原语支撑这一形态——静态定义的专职线程、防漂移的绝对超时（k_timeout）、标准驱动读取链（ADC/I2C）。
+
+### 专职线程：K_THREAD_DEFINE 静态定义
+
+上游推荐用 `K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` 在编译期静态定义线程：栈在链接期固定分配、优先级静态指定、系统启动后自动就绪，不涉及运行期动态创建。本页的 `battery_thread` / `charge_thread` 就是这种形态——每个子系统一个常驻专职线程，内部跑"轮询表 + 状态机"的周期循环；线程收尾用 `k_thread_join()` 等待、`k_thread_abort()` 强制终止，栈余量可用栈测量手段实测（见 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)）。
+
+### 周期不漂移：K_TIMEOUT_ABS_MS 绝对超时
+
+周期任务最常见的隐患是**周期漂移**：每轮用相对超时（如 `K_MSEC(100)`）睡眠，实际周期 = 100ms + 本轮处理耗时，误差逐轮累积。上游 `k_timeout` 体系提供**绝对截止时刻**语义——`K_TIMEOUT_ABS_MS(ms)` 的参数不是"等多久"，而是"等到开机后第几毫秒"。把每轮的阻塞等待超时设为下一周期边界的绝对时刻，无论本轮处理耗时长短，唤醒都锚定在绝对时间网格上；处理超期时超时立即到期，自然"追赶"而不累积误差。所有接受 `k_timeout` 的阻塞原语（`k_sem_take(sem, timeout)`、`k_msgq_get(msgq, data, timeout)` 等）都可用这一写法。
+
+```c
+/* 周期采样循环骨架：绝对超时锚定 100ms 网格 */
+K_SEM_DEFINE(tick_sem, 0, 1);
+static uint32_t deadline_ms = 100;
+
+for (;;) {
+    battery_poll_and_update();        /* 本轮采样 + 状态机（对应 battery_loop_100ms()） */
+    deadline_ms += 100;               /* 下一周期边界的绝对时刻 */
+    k_sem_take(&tick_sem, K_TIMEOUT_ABS_MS(deadline_ms));
+}
+```
+
+### 驱动读取链：ADC 与 I2C（SMBus）标准 API
+
+SMBus 本质是 I2C 上的子协议，"读寄存器"就是上游 `i2c_write_read_dt(spec, ...)` 的两段式传输（先写命令字节、再读数据）。上游标准链路：`i2c_is_ready_dt(spec)` 检查控制器就绪 → `i2c_write_read_dt()` / `i2c_read_dt(spec, ...)` / `i2c_write_dt(spec, ...)` 完成传输；片内传感器（如封装温度）则走 `adc_channel_setup_dt(spec)` 一次性配置通道、`adc_read_dt(spec, ...)` 触发采样。本页对智能电池包与 BQ25720 的全部寄存器读写都对应这条链。
+
+### API 签名速查（Zephyr 3.7.0 已核实）
+
+| 原语 | API | 语义要点 |
+|------|-----|----------|
+| k_thread | `K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` | 编译期静态定义线程，启动后自动就绪 |
+| k_thread | `K_THREAD_STACK_DEFINE(sym, size)` | 声明线程栈内存 |
+| k_thread | `k_thread_join(thread, timeout)` / `k_thread_abort(thread)` | 等待线程退出 / 强制终止 |
+| k_timeout | `K_TIMEOUT_ABS_MS(ms)` | 绝对截止时刻（自开机起算），周期任务防漂移 |
+| k_timeout | `K_NO_WAIT` / `K_FOREVER` / `K_MSEC(ms)` / `K_SECONDS(s)` | 其余超时常量；ISR 中阻塞调用只能 `K_NO_WAIT` |
+| k_sem | `K_SEM_DEFINE(name, initial, limit)` | 编译期定义信号量 |
+| i2c | `i2c_is_ready_dt(spec)` | 检查 I2C 控制器是否就绪 |
+| i2c | `i2c_write_read_dt(spec, ...)` | 写命令 + 读数据两段式传输（SMBus 读寄存器底座） |
+| i2c | `i2c_read_dt(spec, ...)` / `i2c_write_dt(spec, ...)` | 纯读 / 纯写传输 |
+| adc | `adc_channel_setup_dt(spec)` | 按设备树规格配置 ADC 通道 |
+| adc | `adc_read_dt(spec, ...)` | 触发一次采样读取 |
+
+### 陷阱清单
+
+:::danger[栈与优先级在编译期定死]
+- `K_THREAD_DEFINE` 的 stack_size 是该线程栈的唯一来源，估算不足即栈溢出（踩内存常表现为远处的诡异崩溃）；上线前用栈测量手段实测余量
+- 周期轮询线程优先级不宜过高，否则低优先级线程被饿死
+:::
+
+:::warning[周期漂移与中断上下文]
+- 相对超时逐轮累积处理耗时、周期越跑越偏，周期任务用 `K_TIMEOUT_ABS_MS()` 绝对栅格替代
+- 电池插拔 GPIO 中断回调在 ISR 上下文：只能调非阻塞 API（`K_NO_WAIT`），重活交线程
+:::
+
+:::success[native_sim 可直接验证]
+下例只依赖内核原语，不依赖任何芯片硬件：`west build -b native_sim` 后运行 `./build/zephyr/zephyr.exe`，观察"静态线程 + 绝对超时"的周期采样节拍。
+:::
+
+```c
+#include <zephyr/kernel.h>
+
+#define PERIOD_MS 1000
+
+/* 采样节奏的"闹钟"：无人 give 时，k_sem_take 就是到点即醒的睡眠 */
+K_SEM_DEFINE(tick_sem, 0, 1);
+
+static void sampler(void *p1, void *p2, void *p3)
+{
+    static uint32_t deadline_ms = PERIOD_MS;
+    int sample = 0;
+
+    for (;;) {
+        sample++;
+        /* 实际项目中此处走 adc_read_dt / i2c_write_read_dt 读取链 */
+        printk("battery sample #%d\n", sample);
+
+        deadline_ms += PERIOD_MS;    /* 下一周期边界的绝对时刻：防漂移 */
+        k_sem_take(&tick_sem, K_TIMEOUT_ABS_MS(deadline_ms));
+    }
+}
+K_THREAD_DEFINE(poller, 1024, sampler, NULL, NULL, NULL, 5, 0, 0);
+```
+
+专职线程与同步原语全解见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；k_timeout 与阻塞原语选型见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging) 的 k_timeout 节；I2C/ADC 读取链与设备树绑定见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)。
+
 ## 电池状态机
 
 电池子系统维护一个 7 状态的状态机（`BATTERY_STATE` 枚举），精确控制电池在不同工况下的行为：
@@ -39,6 +126,10 @@ description: 电池与充电控制——电池状态机、数据采集与插拔�
 3. 每 500ms 周期：执行 `battery_loop_500ms()`
 4. 每 1s 周期：执行 `battery_loop_1s()` — 根据当前 `BAT1_CtrlStep` 分发到对应状态处理函数：
 
+:::note[上游对应]
+`battery_thread` / `charge_thread` 对应上游 `K_THREAD_DEFINE(name, stack_size, entry, p1, p2, p3, prio, options, delay)` 静态线程定义模式（栈与优先级编译期确定、启动后自动就绪），见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
+
 主状态分发函数 `battery_loop_1s()` 内部逻辑：
 ```c
 switch(BAT1_CtrlStep) {
@@ -63,6 +154,10 @@ case BAT_Step_ACONLY:  bat1_aconly();            break;
 
 插拔检测通过 GPIO 中断触发（`battery_pwrbtn_handler()`），根据引脚电平变化区分插入和移除。
 
+:::note[上游对应]
+插拔检测的 GPIO 中断对应上游 `IRQ_CONNECT` 注册的 ISR + `gpio_pin_interrupt_configure_dt()` 边沿触发；中断上下文中阻塞调用只能传 `K_NO_WAIT`，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms) 与 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)。
+:::
+
 ## 充电器控制
 
 `charge_thread` 独立于电池线程运行，周期性地：
@@ -71,6 +166,10 @@ case BAT_Step_ACONLY:  bat1_aconly();            break;
    - S0→S3/S5：调用 `charger_enable_lowpower()` 降低充电功率
    - S3/S5→S0：调用 `charger_disable_lowpower()` 恢复正常充电，启用 OOA（On-Or-After）功能
 3. 处理适配器插拔事件：生成对应的 SCI 通知主机，通知设备子系统
+
+:::note[上游对应]
+"通知设备子系统"走框架系统事件（sysevent）广播，上游对应 `k_event_post()` 置位事件位 + 各子系统 `k_event_wait()` 检查命中位图，选型见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+:::
 
 充电 IC 初始化通过 `CHARGER_INIT_DATA` 表（`{cmd, data}` 对）写入 BQ25720 寄存器序列，设置输入电流限制、充电电压上限、系统电压最小值等参数。
 

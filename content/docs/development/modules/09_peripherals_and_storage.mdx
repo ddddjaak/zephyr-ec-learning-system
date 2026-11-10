@@ -6,6 +6,102 @@ description: PS/2、存储与外设扩展——PS/2 协议、ERPMC 加密模块�
 
 `drivers/ps2/` 实现传统 PS/2 键盘和 AUX 设备的接口协议，向下兼容使用 PS/2 接口的老款键盘和触摸板。
 
+## Zephyr 机制基础：NVS、settings 与 k_mem_slab
+
+本页的"配置数据区 / 校准数据区"这类参数存储，以及 ERPMC"静态分配、不用堆"的缓冲纪律，上游各有现成机制：参数存储走 NVS 键值存储 + settings 子系统，定长缓冲走 k_mem_slab 固定块池。先理解这三者，本页的 EEPROM / Flash / 加密模块代码就可以按"硬件层通道 vs 参数层通道"分层阅读。
+
+### NVS：Flash 上的键值存储
+
+NVS（Non-Volatile Storage）在一段 Flash 分区上提供键值存储：条目追加写入、旧条目标记删除，垃圾回收由子系统完成——"先写新值再作废旧值"的结构天然避免了 EEPROM 单页写掉电撕裂的问题（正是本页"原子写入"小节要求应用层自己做两阶段提交的场景）。EC 平台上配置、校准、日志类小数据优先走 NVS，而不是裸 EEPROM 页写。存储方案对比与 NVS 细节见 [Zephyr 子系统](/docs/zephyr-kernel/08_subsystems)。
+
+### settings 子系统：结构化参数读写
+
+settings 在存储后端之上提供带命名空间的参数层：键名以 `/` 分层（如 `ec/calib/offset`），最长 64 字符。`settings_subsys_init()` 初始化后，`SETTINGS_STATIC_HANDLER_DEFINE(hname, tree, get, set, commit, export)` 编译期注册静态 handler，tree 前缀下的键全部路由到其 `h_set(key, len, read_cb, cb_arg)` 回调；`settings_load()` 在启动时把持久化键值灌回各 handler，`settings_save_one(name, value, val_len)` 写单键，`settings_delete(name)` 删键，`settings_runtime_set/get/commit` 走运行时注入（需 `CONFIG_SETTINGS_RUNTIME`）。对应 Kconfig：`CONFIG_SETTINGS` 总开关、`CONFIG_SETTINGS_NVS` 指定 NVS 后端、`CONFIG_SETTINGS_SHELL` 暴露 shell 命令。完整小节见 [Zephyr 子系统](/docs/zephyr-kernel/08_subsystems)。
+
+### k_mem_slab：定长缓冲池
+
+`K_MEM_SLAB_DEFINE(name, block_size, num_blocks, align)`（私有作用域加 `_STATIC` 后缀）定义固定块内存池：`k_mem_slab_alloc(slab, &mem, timeout)` 取块（返回 0 / -ENOMEM / -EAGAIN），`k_mem_slab_free(slab, mem)` 归还（Zephyr 3.7 起第二参数为 `void *`），`k_mem_slab_num_used_get()` / `k_mem_slab_max_used_get()` 报告当前水位与历史峰值。这正是本页"密钥在 RAM 中使用后立即清零、全部使用静态分配的 `__aligned(4)` 缓冲区、不使用堆"的内核级实现——固定块、无碎片、容量编译期确定。slab 与 heap 的选型决策表见 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)。
+
+### API / Kconfig 签名速查（Zephyr 3.7.0 已核实）
+
+| 原语 | API / Kconfig | 语义要点 |
+|------|---------------|----------|
+| settings | `settings_subsys_init()` | 初始化 settings 子系统 |
+| settings | `SETTINGS_STATIC_HANDLER_DEFINE(hname, tree, get, set, commit, export)` | 编译期注册静态 handler |
+| settings | `h_set(key, len, read_cb, cb_arg)` | handler 的写回调签名 |
+| settings | `settings_load()` | 启动时回放持久化键值 |
+| settings | `settings_save_one(name, value, val_len)` | 写单个键值 |
+| settings | `settings_delete(name)` | 删除单个键 |
+| settings | `settings_runtime_set/get/commit` | 运行时注入（需 CONFIG_SETTINGS_RUNTIME） |
+| Kconfig | `CONFIG_SETTINGS` / `CONFIG_SETTINGS_NVS` / `CONFIG_SETTINGS_SHELL` | 总开关 / NVS 后端 / shell 命令 |
+| Kconfig | `CONFIG_FLASH` | NVS 依赖的 Flash 驱动开关 |
+| k_mem_slab | `K_MEM_SLAB_DEFINE(name, block_size, num_blocks, align)` | 定义公共定长缓冲池（私有用 `_STATIC`） |
+| k_mem_slab | `k_mem_slab_alloc(slab, &mem, timeout)` | 取块：0 / -ENOMEM / -EAGAIN |
+| k_mem_slab | `k_mem_slab_free(slab, mem)` | 归还块（3.7 起第二参数为 `void *`） |
+| k_mem_slab | `k_mem_slab_num_used_get(slab)` / `k_mem_slab_max_used_get(slab)` | 当前占用 / 历史峰值 |
+
+### 陷阱清单
+
+:::danger[ISR 与内存语义]
+- `k_mem_slab_alloc` 在 ISR 上下文只能传 `K_NO_WAIT`；ISR 中分配失败（-EAGAIN / -ENOMEM）只能放弃或转投 work
+- `k_mem_slab_free` 的第二参数自 Zephyr 3.7 起是 `void *`（不再是 `char **`），旧示例代码直接搬会编译报错
+:::
+
+:::warning[settings 使用边界]
+- 键名最长 64 字符、以 `/` 分层；规划 tree 前缀时先算长度，超长键名会被拒收
+- `settings_load()` 必须在 `settings_subsys_init()` 与各 handler 注册之后调用，否则对应键无人接收
+- 回调里必须通过 `read_cb` 取数，不能直接缓存指针
+:::
+
+:::success[native_sim 可直接验证]
+下例只依赖内核原语（不依赖任何芯片/真实 Flash 芯片；需 `CONFIG_SETTINGS=y` + `CONFIG_SETTINGS_RUNTIME=y`），`west build -b native_sim` 后运行 `./build/zephyr/zephyr.exe`：
+:::
+
+```c
+#include <zephyr/kernel.h>
+#include <zephyr/settings/settings.h>
+
+/* 定长缓冲池：4 块 x 64 字节、4 字节对齐（对应密钥缓冲的静态分配纪律） */
+K_MEM_SLAB_DEFINE(buf_pool, 64, 4, 4);
+
+/* 静态 handler："ec/calib" 前缀下的键全部路由到 calib_set */
+static int calib_set(const char *key, size_t len,
+                     settings_read_cb read_cb, void *cb_arg)
+{
+    uint32_t value = 0;
+
+    if (len == sizeof(value)) {
+        read_cb(cb_arg, &value, len);
+    }
+    printk("calib/%s = %u\n", key, value);
+    return 0;
+}
+SETTINGS_STATIC_HANDLER_DEFINE(calib_hdl, "ec/calib",
+                               NULL, calib_set, NULL, NULL);
+
+int main(void)
+{
+    void *blk;
+    uint32_t calib = 1234;
+
+    settings_subsys_init();
+    settings_load();   /* 启动时回放持久化键值（无后端时为空操作） */
+
+    /* 运行时注入：值经 handler 路由进 calib_set */
+    settings_runtime_set("ec/calib/offset", &calib, sizeof(calib));
+
+    if (k_mem_slab_alloc(&buf_pool, &blk, K_NO_WAIT) == 0) {
+        printk("slab used=%u max=%u\n",
+               k_mem_slab_num_used_get(&buf_pool),
+               k_mem_slab_max_used_get(&buf_pool));
+        k_mem_slab_free(&buf_pool, blk);
+    }
+    return 0;
+}
+```
+
+NVS / settings / Flash 存储全解见 [Zephyr 子系统](/docs/zephyr-kernel/08_subsystems)；slab / heap 选型与容量规划见 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)。
+
 ## PS/2 协议时序
 
 PS/2 使用两根线通信：CLK（时钟）和 DATA（数据），均为开漏输出 + 上拉电阻。数据传输由设备（键盘）提供时钟（10-16.7 kHz），每个数据帧包含：
@@ -66,6 +162,10 @@ ERPMC 模块由以下子系统组成：
 - 不使用堆内存存储密钥材料——全部使用静态分配的 `__aligned(4)` 缓冲区
 - 通信加密模式：HMAC-SHA256 用于消息认证，AES-256-CTR 用于载荷加密
 
+:::note[上游对应]
+"全部静态分配、不用堆"的上游等价物是 k_mem_slab 固定块池（`K_MEM_SLAB_DEFINE` + alloc/free）：容量编译期确定、无碎片、水位可统计，见 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)。
+:::
+
 ## MCTP over eSPI OOB
 
 MCTP（Management Component Transport Protocol）是 DMTF 标准的管理协议，在 eSPI OOB 通道上承载。ERPMC 的 MCTP 实现处理以下消息类型：
@@ -88,6 +188,10 @@ MCTP（Management Component Transport Protocol）是 DMTF 标准的管理协议�
 ## VCI 虚拟组件接口 (Virtual Component Interface)
 
 `drivers/vci/` 提供虚拟化的外设访问接口，使上层应用无需关注底层硬件的具体实现细节。VCI 封装了 I2C、SPI、GPIO 等底层总线的访问，为传感器、电源 IC、LED 驱动等外设提供统一的寄存器读写抽象层。
+
+:::note[上游对应]
+VCI 统一封装 I2C/SPI/GPIO 访问的上游对应物是各驱动子系统 API（如 `i2c_write()`、`gpio_pin_set()`）与 `const struct device *` 设备实例，见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)。
+:::
 
 ## MPS2825 VR IC 配置 (MPS2825 VR Config)
 
@@ -126,6 +230,10 @@ EEPROM 典型使用 I2C 接口（地址 0x50-0x57），存储空间按功能分�
 
 EEPROM 写入以页为单位（通常 32/64 字节页），但单页写入**没有掉电原子性保证**——页写过程中掉电可能导致该页数据撕裂（部分字节是新值、部分是旧值）。可靠性要求高的数据必须由应用层保护：采用"先写数据区、后写提交标志"的两阶段提交，或双区冗余 + CRC 校验，读取时校验失败则回退到上一份有效数据。
 
+:::note[上游对应]
+配置/校准类小数据的上游通道是 NVS + settings（`settings_save_one` / `settings_load`）：NVS"追加写 + 标记删除"天然抗掉电撕裂，可替代本节手工两阶段提交，见 [Zephyr 子系统](/docs/zephyr-kernel/08_subsystems)。
+:::
+
 ## DTS 配置
 
 ```devicetree
@@ -138,6 +246,10 @@ EEPROM 写入以页为单位（通常 32/64 字节页），但单页写入**没�
     };
 };
 ```
+
+:::note[上游对应]
+`eeprom@50` 节点 + `compatible` 属性对应 Zephyr 设备树绑定与驱动模型（`DT_INST` 多实例、`DEVICE_DT_GET()` 获取设备实例），见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)。
+:::
 
 ## SPI Flash 共享 (SPI Flash Driver)
 

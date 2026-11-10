@@ -3,6 +3,61 @@ title: 调试与问题定位
 description: 调试与问题定位——日志系统、栈溢出检测与性能分析工具
 ---
 
+## Zephyr 机制基础：日志子系统的架构
+
+本页的调试手段挂在两个上游子系统上：log（结构化日志）与 shell（交互控制台）。先把 log 的四个组成件——**模块注册、级别过滤、后端、延迟输出**——讲清楚，再看本页的 Kconfig 就不再是"抄配置"。
+
+**模块注册与级别过滤。** 每个编译单元用 `LOG_MODULE_REGISTER(module, level)` 注册成一个日志模块：`level` 是**编译期上限**，`LOG_ERR` / `LOG_WRN` / `LOG_INF` / `LOG_DBG` 四级宏中超过上限的调用会在编译期被整体剔除——运行时把级别调回去，也调不出没编进固件的消息。`CONFIG_LOG_DEFAULT_LEVEL` 为未显式指定级别的模块兜底（0=NONE，1=ERR，2=WRN，3=INF，4=DBG）。
+
+**后端与延迟输出。** 日志宏不直接写串口：核心先把消息**入队**，再异步刷到已启用的后端（UART、RTT、shell 控制台等）——这就是"延迟输出"，打印路径短，中断上下文里打日志也安全；代价是队列容量有限，高频打印时可能丢消息。`CONFIG_LOG_MODE_MINIMAL=y` 换成一条无队列的精简即时输出路径，省 RAM/ROM，适合量产固件（即本页下方「日志系统」小节的配置）。
+
+| 宏 / Kconfig | 作用 |
+|--------------|------|
+| `LOG_MODULE_REGISTER(module, level)` | 注册编译单元为日志模块，设定编译期最高级别 |
+| `LOG_ERR` / `LOG_WRN` / `LOG_INF` / `LOG_DBG` | 四级输出宏，超过模块编译级别的调用被编译剔除 |
+| `CONFIG_LOG` | 启用日志子系统 |
+| `CONFIG_LOG_DEFAULT_LEVEL` | 未显式指定级别模块的默认级别（0~4） |
+| `CONFIG_LOG_MODE_MINIMAL` | 精简模式：无队列即时输出，省空间 |
+
+最小示例（native_sim 可跑，不依赖任何芯片硬件）：
+
+```c
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(demo_log, LOG_LEVEL_INF);
+
+int main(void)
+{
+    LOG_INF("boot ok");                            /* 会输出 */
+    LOG_DBG("module level is INF: compiled out");  /* 超过编译期上限，被剔除 */
+    return 0;
+}
+```
+
+```ini
+CONFIG_LOG=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+```
+
+```bash
+west build -b native_sim
+./build/zephyr/zephyr.exe
+```
+
+:::warning
+模块的编译期级别决定哪些 `LOG_*` 调用真正编进固件：编译期被剔除的日志，运行时怎么调级都找不回来。调试期留 `LOG_LEVEL_DBG`，量产降级后需重新编译验证。
+:::
+
+:::warning
+延迟输出模式先入队、后刷出，队列容量有限——ISR 与高频循环里刷屏可能丢消息；`CONFIG_LOG_MODE_MINIMAL=y` 无队列缓冲但即时输出。两种模式按产品形态取舍。
+:::
+
+:::success
+启用 Shell（`CONFIG_SHELL`）后，log 子系统会向 Shell 注册命令组，可在运行时查看模块状态、动态调整级别——不用重新编译就能切换调试面。
+:::
+
+模块注册、级别过滤、后端扩展与延迟输出的完整机制（含运行时调级），在 [/docs/zephyr-kernel/08_subsystems](/docs/zephyr-kernel/08_subsystems) 的 Logging 小节有更深入的展开。
 
 ## 日志系统
 
@@ -28,6 +83,10 @@ CONFIG_LOG_DEFAULT_LEVEL=3       # 0=NONE, 1=ERR, 2=WRN, 3=INF, 4=DBG
 
 生产固件中建议使用 `CONFIG_LOG_MODE_MINIMAL=y` 并降低默认级别。
 
+:::note[深化指引]
+本页覆盖最常用的用法面：模块注册、级别过滤、后端与延迟输出的完整机制，以及运行时动态调级，见 [/docs/zephyr-kernel/08_subsystems](/docs/zephyr-kernel/08_subsystems) 的 Logging 小节。
+:::
+
 ## 栈溢出检测
 
 在 `prj.conf` 中启用以下保护：
@@ -44,12 +103,20 @@ CONFIG_PRINTK=y
 
 崩溃处理策略：Zephyr 没有独立的 `CONFIG_FATAL_ERROR_HANDLER` 开关——定制致命错误行为的方式是在应用中覆盖 `k_sys_fatal_error_handler()`，完整流程见[异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis)。
 
+:::note[上游对应]
+`k_sys_fatal_error_handler()` 是 Zephyr 内核的致命错误钩子（上游 API，非本方案定制）：它在故障/异常上下文中执行，不可假定线程调度可用。中断上下文的约束见 [/docs/zephyr-kernel/05_kernel_mechanisms](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
+
 运行时通过 Shell 命令查看栈使用：
 
 ```
 uart:~$ kernel stacks
 uart:~$ kernel heap
 ```
+
+:::note[深化指引]
+`kernel stacks` / `kernel heap` 是 Shell 子系统的内置命令（上游原生，非 EC 定制层）：命令体系与多后端见 [/docs/zephyr-kernel/08_subsystems](/docs/zephyr-kernel/08_subsystems) 的 Shell 小节，线程栈测量与余量评估原理见 [/docs/zephyr-kernel/15_object_lifecycle](/docs/zephyr-kernel/15_object_lifecycle)。
+:::
 
 使用 `k_thread_stack_space_get()` 在代码中查询未使用栈空间，建议每个线程保留 20-30% 余量。
 
@@ -65,6 +132,10 @@ uint32_t cycles = t1 - t0;
 uint64_t us = cycles * 1000000ULL / sys_clock_hw_cycles_per_sec();
 LOG_INF("critical_function took %llu us", us);
 ```
+
+:::note[上游对应]
+`k_cycle_get_32()` / `sys_clock_hw_cycles_per_sec()` 是内核时间原语（与 `k_timer`、`k_msleep` 同源于系统时钟节拍）；超时类型 `k_timeout` 的语义与异步机制选型见 [/docs/zephyr-kernel/13_async_messaging](/docs/zephyr-kernel/13_async_messaging)。
+:::
 
 SystemView——通过 RTT/USB 将内核事件（线程切换、ISR、API 调用）导出到 PC 端可视化分析：
 

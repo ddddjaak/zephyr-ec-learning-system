@@ -6,6 +6,86 @@ description: ACPI 事件路由、Port80 与 LED / GPIO——事件路由、调�
 
 `drivers/acpi/` 负责将 EC 内部事件映射为 ACPI 标准通知并通过 eSPI 上报主机。
 
+## Zephyr 机制基础：log、shell 与栈测量
+
+本页的调试能力——模块日志、交互式命令、状态监控——在 Zephyr 上游分别对应 log 子系统与 shell 子系统；"调试功能在最终发布版本中应能被有效禁用"的诉求由 Kconfig 裁剪实现；栈溢出排查则由运行时栈测量 API 承担。先掌握这些原语，`app/debug/` 的各封装就是薄壳。
+
+### log 子系统：分级日志与异步输出
+
+`CONFIG_LOG=y` 开启日志子系统，`LOG_MODULE_REGISTER(module, level)` 在每个编译单元注册模块级日志源，随后即可使用 `LOG_ERR` / `LOG_WRN` / `LOG_INF` / `LOG_DBG` 四级宏；`CONFIG_LOG_DEFAULT_LEVEL` 控制全局默认级别。日志默认走延迟模式（由日志线程后台格式化输出，不打断实时路径），需要同步输出时切 `CONFIG_LOG_MODE_IMMEDIATE=y`——这正对应本页"日志系统应设计为异步、非阻塞式"的设计要点。
+
+### Shell：交互式调试台
+
+`CONFIG_SHELL=y` 开启 Zephyr Shell 后，固件获得一个完整的交互式命令台：内置 `kernel`（线程/栈信息）、`log`、`devmem` 等命令，GPIO 也有现成的 `gpio` 子命令（`get` / `set` / `conf`，可直接读写引脚状态）；自定义命令通过 handler 注册。本页 Port80 / LED / RAM 调试所需的"运行时观察与干预"，shell + log 的组合基本覆盖，无需自建通道。架构、命令注册与运行时调试技巧见 [Zephyr 子系统](/docs/zephyr-kernel/08_subsystems)。
+
+### 运行时栈测量：把"栈够不够"变成数字
+
+线程栈是 EC 固件最常出事的内存资源。Zephyr 提供 `CONFIG_THREAD_STACK_INFO`（保留每线程栈信息）+ `CONFIG_INIT_STACKS`（启动期把栈填成已知图案）+ `k_thread_stack_space_get(thread, &unused)`（扫描图案返回未用高水位，返回 0 表示成功）三件套，在本页 GPIO / 事件处理线程上实测余量，替代拍脑袋定栈。注意它只在线程真正运行过后读数才有意义；量产按 footprint 裁掉。完整上下文见 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle) 的栈测量节。
+
+### API / Kconfig 签名速查（Zephyr 3.7.0 已核实）
+
+| 原语 | API / Kconfig | 语义要点 |
+|------|---------------|----------|
+| log | `CONFIG_LOG` / `CONFIG_LOG_DEFAULT_LEVEL` | 日志子系统总开关 / 全局默认级别 |
+| log | `LOG_MODULE_REGISTER(module, level)` | 每编译单元注册模块日志源 |
+| log | `LOG_ERR` / `LOG_WRN` / `LOG_INF` / `LOG_DBG` | 四级日志宏 |
+| shell | `CONFIG_SHELL` | 交互式 Shell 开关（含 gpio 子命令） |
+| Kconfig | `CONFIG_GPIO` | GPIO 驱动子系统开关（native_sim 用 `CONFIG_GPIO_EMUL`） |
+| 栈测量 | `CONFIG_THREAD_STACK_INFO` + `CONFIG_INIT_STACKS` | 两者都开，栈测量 API 才有数据 |
+| 栈测量 | `k_thread_stack_space_get(thread, &unused)` | 返回 0 时 unused 为未用栈高水位 |
+
+### 陷阱清单
+
+:::danger[ISR 与日志]
+- GPIO 中断回调等 ISR 上下文禁止调用阻塞 API（只能 `K_NO_WAIT`）；日志宏虽可安全使用，但回调内只做置位/投递，处理放线程
+- `LOG_MODULE_REGISTER` 每个编译单元只能注册一次，头文件共用时注意重复注册导致的链接冲突
+:::
+
+:::warning[栈测量的前提]
+- `k_thread_stack_space_get` 需要 `CONFIG_THREAD_STACK_INFO` 与 `CONFIG_INIT_STACKS` 同时开启，缺一个则拿不到数据；线程尚未运行过时返回非 0
+- `CONFIG_INIT_STACKS` 会在启动期额外填充整块栈内存，发布版本按 footprint 关闭
+:::
+
+:::success[native_sim 可直接验证]
+下例只依赖内核原语（不依赖任何芯片硬件；需 `CONFIG_LOG`、`CONFIG_THREAD_STACK_INFO`、`CONFIG_INIT_STACKS`），`west build -b native_sim` 后运行 `./build/zephyr/zephyr.exe`：
+:::
+
+```c
+#include <zephyr/kernel.h>
+#include <zephyr/logging/log.h>
+
+LOG_MODULE_REGISTER(debug_demo, LOG_LEVEL_INF);
+
+static void worker_entry(void *p1, void *p2, void *p3)
+{
+    volatile uint8_t sink[64];
+
+    for (int i = 0; i < 10; i++) {
+        sink[i] = (uint8_t)i;
+        k_sleep(K_MSEC(10));
+    }
+    LOG_DBG("worker done");
+}
+
+/* 编译期静态定义线程（栈 1024 字节，立即启动） */
+K_THREAD_DEFINE(worker, 1024, worker_entry, NULL, NULL, NULL, 7, 0, 0);
+
+int main(void)
+{
+    size_t unused = 0;
+
+    k_sleep(K_MSEC(200));   /* 等 worker 跑过一轮，栈水位成型 */
+
+    if (k_thread_stack_space_get(worker, &unused) == 0) {
+        LOG_INF("worker stack unused=%zu bytes", unused);
+    }
+    LOG_INF("debug demo up; try the 'kernel threads' shell command");
+    return 0;
+}
+```
+
+log / shell 全解见 [Zephyr 子系统](/docs/zephyr-kernel/08_subsystems)；栈测量完整说明见 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle) 的栈测量节。
+
 ## 事件路由表
 
 ACPI Hub 维护一张事件路由表，定义 EC 内部事件与 ACPI 通知码之间的映射关系：
@@ -74,6 +154,10 @@ MAX6958 是 I2C 接口的 4 位 7 段 LED 数码管驱动 IC，通过 I2C 总线
 
 EC 的外设管理采用"GPIO 中断 + 事件广播"模式：硬件 GPIO 中断触发 → ISR 中完成最小处理（消抖、电平确认） → 调用预注册的回调函数 → 回调函数通过 `notify_subsystems()` 或 `k_event_post()` 将事件广播给相关子系统。
 
+:::note[上游对应]
+"ISR 最小处理 + 广播"对应上游 `k_event_post()`（ISR 只置位，线程 `k_event_wait()` 解码）与 `k_work_submit()` 的 ISR→线程解耦模式，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
+
 典型外设及其处理模块：
 
 | 外设 | 处理模块 | 事件 |
@@ -136,6 +220,10 @@ led_breathing(LED0, &info);  // LED0 开始呼吸
 ## 应用层集成
 
 应用层通过 `ec_dev` IOCTL 接口间接控制 LED（`LED_IOCTL_TURN_ON` / `LED_IOCTL_TURN_OFF`），而非直接调用 `led_hub` API。这保证了 LED 控制逻辑集中在设备抽象层，上层模块（如电池、充电、电源管理）通过统一的 `device_ioctl(DEV_TYPE_LED, ...)` 接口操作 LED。
+
+:::note[上游对应]
+`device_ioctl` / `ec_dev` IOCTL 为本方案定制层 API，Zephyr 上游无此统一分发接口；上游对应物是各驱动子系统 API 与 `const struct device *` 设备实例（经 `DEVICE_DT_GET()` 获取），见 [驱动模型与 DT_INST](/docs/zephyr-kernel/07_driver_model)。
+:::
 
 典型场景：
 - 电源 LED：S0 常亮、S3 慢速呼吸、S5 熄灭
@@ -202,6 +290,10 @@ void thermal_task(void) {
 DECLARE_TASK(thermal_task, TASK_PRIORITY_LOW, thermal_task_stack);
 ```
 
+:::note[上游对应]
+Legacy 的 `task_wait_event()` / `task_set_event()` 事件位图对应 Zephyr 的 `k_event_wait()` / `k_event_post()`；`DECLARE_TASK` 静态任务表对应 `K_THREAD_DEFINE` 静态线程定义（入口、栈、优先级三要素逐项对应），见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
+
 ## Hooks 机制
 
 Hooks 是 EC 中的回调机制，当特定事件发生时自动调用注册的处理函数：
@@ -239,6 +331,10 @@ static void usb_process_deferred(void) {
 }
 DECLARE_DEFERRED(usb_process_deferred);
 ```
+
+:::note[上游对应]
+`hook_call_deferred()` 的"推迟到线程上下文执行"对应 Zephyr 工作队列：`K_WORK_DELAYABLE_DEFINE` + `k_work_schedule()`（已 pending 则 no-op）或 `k_work_reschedule()`（无条件重置截止时间），见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
 
 ## 看门狗
 

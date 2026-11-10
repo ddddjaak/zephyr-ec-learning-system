@@ -3,6 +3,108 @@ title: USB 与 PD 管理
 description: USB 与 PD 管理——USB 设备栈（HID/DFU）与 Type-C PD 管理
 ---
 
+## Zephyr 机制基础：事件驱动状态机的内核底座
+
+本页的 PD 状态机、`pd_thread` 主循环与 `sEvent.event_pd` 事件检查没有引入任何新内核机制——事件驱动状态机构建在 Zephyr 事件对象（k_event）之上，报文/命令缓冲对应消息队列（k_msgq），"一个线程同时盯多个源"的场景上游原语是 k_poll。先掌握这三个原语，框架代码就可以当"应用层薄封装"来读。
+
+### 事件对象（struct k_event）：状态机的事件源
+
+`k_event` 是 32 位位掩码事件对象：`K_EVENT_DEFINE(name)` 编译期定义（运行期可用 `k_event_init`），`k_event_post(event, mask)` 置位事件位（线程与 ISR 均可调用），`k_event_wait(event, events, wait_all, timeout)` 等待/检查指定位，返回命中的位图或 0（超时无命中）。本页 `pd_sys_event()` 用 `k_event_wait(&sEvent.event_pd, ...)` 检查系统事件（`EC_EVENT_SYSTEM_S5_S0` 等）正是这一语义的直接应用：广播方只管 post，状态机线程按位解码，一次等待即可表达"插拔 + 电源态切换 + 预留扩展位"的任意组合。
+
+### 消息队列（struct k_msgq）：报文与命令的缓冲层
+
+PD 报文、主机命令这类"到来即处理"的数据流，上游对应物是 `k_msgq`：`K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` 编译期分配定长缓冲，`k_msgq_put()` / `k_msgq_get()` 以值拷贝方式进出，可带 `K_NO_WAIT` / `K_MSEC(ms)` / `K_FOREVER` 超时。把"状态"与"数据"分开——状态位走 k_event，携带数据的消息走 k_msgq——是事件驱动状态机最常用的解耦模式，ISR 侧只投递不处理，处理逻辑全部收敛到状态机线程。
+
+### k_poll：单线程等待多个事件源
+
+当状态机需要同时等待"队列有数据 / 信号量可用 / signal 通知"多个异构源时，不必为每个源各开一个线程：`k_poll(events, num, timeout)` 用一个事件数组同时等待，就绪返回 0、超时返回 -EAGAIN。事件项用 `K_POLL_EVENT_STATIC_INITIALIZER(type, mode, obj, tag)` 静态初始化，类型如 `K_POLL_TYPE_MSGQ_DATA_AVAILABLE`、`K_POLL_TYPE_SEM_AVAILABLE`、`K_POLL_TYPE_SIGNAL`。注意 k_poll 只"报告就绪"，真正取数据仍要调 `k_msgq_get()` 等 API。
+
+### API 签名速查（Zephyr 3.7.0 已核实）
+
+| 原语 | API | 语义要点 |
+|------|-----|----------|
+| k_event | `K_EVENT_DEFINE(name)` | 编译期定义事件对象 |
+| k_event | `k_event_init(event)` | 运行期初始化事件对象 |
+| k_event | `k_event_post(event, mask)` | 置位事件位，线程/ISR 均可调用 |
+| k_event | `k_event_wait(event, events, wait_all, timeout)` | 等待事件位，返回命中位图或 0 |
+| k_msgq | `K_MSGQ_DEFINE(name, msg_size, max_msgs, align)` | 编译期定义静态消息队列 |
+| k_msgq | `k_msgq_put(msgq, data, timeout)` | 入队一条消息，队满返回 -EAGAIN |
+| k_msgq | `k_msgq_get(msgq, data, timeout)` | 出队一条消息，队空可阻塞 |
+| k_poll | `K_POLL_EVENT_STATIC_INITIALIZER(type, mode, obj, tag)` | 静态初始化一个轮询事件项 |
+| k_poll | `k_poll(events, num, timeout)` | 等待多源，0 = 就绪，-EAGAIN = 超时 |
+| k_timeout | `K_NO_WAIT` / `K_FOREVER` / `K_MSEC(ms)` / `K_SECONDS(s)` | 超时语义；ISR 中阻塞 API 只能 K_NO_WAIT |
+
+### 陷阱清单
+
+:::danger[ISR 与超时硬约束]
+- 中断上下文（如 TCPC ALERT 中断回调）只能调用非阻塞形式：`k_msgq_put/get`、`k_event_post`、`k_poll` 一律传 `K_NO_WAIT`，否则断言失败或行为未定义
+- `k_event_wait` 阻塞等待只能发生在线程上下文；ISR 侧只置位、不等待
+:::
+
+:::warning[k_poll 复用与事件粘滞]
+- `k_poll` 就绪后 `events[i].state` 保持"已就绪"，复用同一事件数组前必须手动复位 `events[i].state = K_POLL_STATE_NOT_READY`，否则下一次轮询立即误报
+- 事件位被等待命中后不会自动清除，循环状态机消费时注意粘滞语义
+- k_poll 依赖 `CONFIG_POLL`（默认开启，裁剪内核时勿误关）
+:::
+
+:::success[native_sim 可直接验证]
+下例只依赖内核原语（不依赖任何芯片/TCPC 硬件），`west build -b native_sim` 后运行 `./build/zephyr/zephyr.exe`，可观察"事件置位 → 状态迁移 → 消息取出"的最小闭环。
+:::
+
+```c
+#include <zephyr/kernel.h>
+
+/* 事件对象：状态机事件源（对应 pd 模块对 sEvent.event_pd 的等待方式） */
+K_EVENT_DEFINE(pd_evt);
+#define EVT_PLUG_IN  BIT(0)
+#define EVT_PLUG_OUT BIT(1)
+
+/* 消息队列：PD 报文缓冲（ISR 侧只投递不处理） */
+K_MSGQ_DEFINE(pd_msgq, sizeof(uint8_t), 4, 4);
+
+/* k_poll：单线程等待"队列有数据"这一类事件源 */
+static struct k_poll_event ev_msg =
+    K_POLL_EVENT_STATIC_INITIALIZER(K_POLL_TYPE_MSGQ_DATA_AVAILABLE,
+                                    K_POLL_MODE_NOTIFY_ONLY, &pd_msgq, 0);
+
+enum pd_demo_state { PD_IDLE, PD_NEGO };
+
+/* 模拟 ISR 侧：只投递、不处理 */
+static void alert_isr_like(void)
+{
+    uint8_t msg = 0x5A;
+
+    k_msgq_put(&pd_msgq, &msg, K_NO_WAIT);
+    k_event_post(&pd_evt, EVT_PLUG_IN);
+}
+
+int main(void)
+{
+    enum pd_demo_state st = PD_IDLE;
+
+    alert_isr_like();
+
+    /* 事件等待：返回命中位图；100ms 内无命中返回 0 */
+    uint32_t hit = k_event_wait(&pd_evt, EVT_PLUG_IN | EVT_PLUG_OUT,
+                                false, K_MSEC(100));
+    if (hit & EVT_PLUG_IN) {
+        st = PD_NEGO;
+    }
+
+    /* k_poll：0 = 有源就绪，-EAGAIN = 超时；就绪后仍需 get 取数 */
+    if (k_poll(&ev_msg, 1, K_MSEC(50)) == 0) {
+        uint8_t cmd;
+
+        k_msgq_get(&pd_msgq, &cmd, K_NO_WAIT);
+        printk("state=%d cmd=0x%02x\n", st, cmd);
+        ev_msg.state = K_POLL_STATE_NOT_READY;  /* 复用前复位 */
+    }
+    return 0;
+}
+```
+
+线程、同步与中断交互全解见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)；k_event / k_msgq / k_poll 的完整对比与机制选型决策表见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+
 ## USB 功能模块 (USB Function)
 
 `drivers/usb/` 实现 EC 作为 USB 复合设备与主机交互，主要用于系统固件更新（DFU 模式）和调试接口。
@@ -59,6 +161,10 @@ PD 管理维护 4 个状态（`enum pd_state`）：
 
 上电后 PD 模块依次完成两级固件加载和协议栈初始化，然后进入事件驱动的主循环。
 
+:::note[上游对应]
+事件驱动主循环的上游基础是 Zephyr 事件对象与消息队列：状态位用 `k_event_wait()` 按位解码、携带数据的报文走 `k_msgq`，多源等待可用 `k_poll` 合并到单线程，详见 [异步消息机制](/docs/zephyr-kernel/13_async_messaging)。
+:::
+
 ### 供电能力协商
 
 当 Type-C 适配器插入后，EC 通过 PD 协议与适配器协商供电能力（PDO — Power Delivery Object），协商结果通过以下 OEM 可定制函数对外提供：
@@ -81,6 +187,10 @@ OEM 需根据实际 PD 协商结果实现这三个函数。典型返回值示例
    - 其他事件（LID、Display、ITS 模式切换等）当前为预留桩，OEM 可按需扩展
 2. 100ms 子周期 — 预留的周期性任务槽位，可在此执行 PD 状态轮询或 Type-C 插拔检测
 
+:::note[上游对应]
+`pd_thread` 的周期等待循环对应 Zephyr 静态线程（`K_THREAD_DEFINE`）+ `k_event_wait` 事件检查的组合，`sEvent.event_pd` 即上游 `struct k_event` 对象，见 [Zephyr 内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)。
+:::
+
 ### 与电池充电模块的协作
 
 PD 协商结果直接影响充电策略：
@@ -92,6 +202,10 @@ PD 协商结果直接影响充电策略：
 ### 配置
 
 通过 `CONFIG_PD_LOG_LEVEL` 控制 PD 模块的日志输出级别，调试阶段建议设为 `LOG_LEVEL_DBG`。
+
+:::note[上游对应]
+`CONFIG_PD_LOG_LEVEL` 是 Zephyr log 子系统"每模块日志级别"的用法，配合 `LOG_MODULE_REGISTER(module, level)` 生效，见 [Zephyr 子系统](/docs/zephyr-kernel/08_subsystems)。
+:::
 
 
 ---
@@ -153,6 +267,10 @@ uart:~$ pd <port> charger    # 查看充电器信息
 uart:~$ pd <port> version    # 查看 PD 协议栈版本
 uart:~$ pd <port> dump       # 寄存器转储
 ```
+
+:::note[上游对应]
+EC Shell 的 `pd` 子命令构建在 Zephyr Shell（`CONFIG_SHELL`）之上——shell 架构、子命令注册与内置命令见 [Zephyr 子系统](/docs/zephyr-kernel/08_subsystems)。
+:::
 
 ### 详细参考资料
 
