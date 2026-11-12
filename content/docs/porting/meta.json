@@ -8,6 +8,7 @@
     "04_kconfig_and_optimization",
     "05_new_driver_development",
     "06_migration_from_legacy_ec",
-    "07_bringup_checklist"
+    "07_bringup_checklist",
+    "08_version_upgrade"
   ]
 }

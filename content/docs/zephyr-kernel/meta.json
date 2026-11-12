@@ -17,6 +17,8 @@
     "13_async_messaging",
     "14_userspace",
     "15_object_lifecycle",
-    "16_community_contribution"
+    "16_linker_and_memory_layout",
+    "17_measurement_and_tracing",
+    "18_community_contribution"
   ]
 }

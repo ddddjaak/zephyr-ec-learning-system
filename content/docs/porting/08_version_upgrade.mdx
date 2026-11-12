@@ -1,0 +1,225 @@
+---
+title: "Zephyr 版本升级与迁移"
+description: "Zephyr 版本节奏与 LTS 策略、升级前评估、west 工作区升级、编译错误与 Devicetree/Kconfig 迁移修复方法、回归验证清单与回滚策略"
+---
+
+:::note[阅读提示]
+本页讲的是 **Zephyr 上游版本本身的升级**（如 3.7 → 4.x），面向维护这套固件多年的工程师。如果是"从友商 EC 固件迁移到 Zephyr"，看 [传统 EC 迁移](/docs/porting/06_migration_from_legacy_ec)；如果是"新芯片 bring-up"，看 [移植流程](/docs/porting/01_porting_guide)。
+:::
+
+:::info[学习目标]
+通过本章学习，你将掌握：
+
+- Zephyr 的版本节奏（~4 个月一个 minor）与 LTS 定位，判断"要不要升、升到哪"
+- 升级前的评估方法：按你用到的子系统读 migration guide，而不是通读全文
+- west 工作区层面的升级操作：manifest revision 切换、模块更新与冲突处理
+- 编译错误、Kconfig 符号改名、Devicetree binding 变更的**逐类修复方法**（给方法而非穷举）
+- 升级后的回归验证：体积对比、Twister 全量、bring-up 清单复跑
+- 回滚与分支策略：vendor fork 跟上游的 rebase/merge 决策、本地补丁的托管方式
+:::
+
+## 概述
+
+本手册与固件基线锁定在 **Zephyr 3.7 LTS**，这是 Zephyr 首个 LTS 版本，也是其维护周期内的安全修复承载线。但"锁定 LTS"不等于"永不升级"——安全 CVE、工具链 EOL、新芯片支持、以及上游对旧版本的弃用窗口，都会把升级提上日程。一次失控的升级能把稳定运行的固件变成数周的救火现场；一次有方法论的升级通常在 1–2 周内收敛。
+
+本章给的就是这套方法论：**评估 → 升级工作区 → 修复 → 回归 → 落地**，每一步都有明确的输入输出。
+
+## 1. 版本节奏与升级策略
+
+### 1.1 版本序列
+
+Zephyr 的发布节奏（截至 4.x 系列，`doc/releases/` 下每版一份 release note + 一份 migration guide）：
+
+```text
+3.5 → 3.6 → 3.7 (LTS) → 4.0 → 4.1 → 4.2 → 4.3 → 4.4 → 4.5 → ...
+```
+
+- **minor 版本**：约每 4 个月一个（4.0、4.1……），带来新特性，也带来弃用与破坏性变更
+- **LTS（3.7）**：长期支持，只收 bugfix 与安全修复，不收新特性
+- **弃用窗口**：被标记 deprecated 的 API 会在迁移指南中预告，保留数个版本后移除——这正是 migration guide 每版必读的原因
+
+### 1.2 升不升、升到哪
+
+| 信号 | 建议 |
+|------|------|
+| CVE 公告命中你用的子系统/模块 | 优先看 LTS 补丁版本（如有），否则规划升级 |
+| 需要新芯片/新驱动支持 | 升到包含它**最近的 minor**，不追最新 |
+| 编译器/构建工具链 EOL | 随升级一起换工具链，一次性收敛 |
+| 只是想"保持最新" | 不升。LTS 锁定 + 按 CVE 评估是嵌入式产品线的默认正确姿势 |
+
+**跳版本策略**：跨多个 minor 时（如 3.7 → 4.3），**逐版读 migration guide 但逐版升级不做**——git 分支上逐版过编译修复（3.7→4.0→4.1→…），每步一个 commit，出问题时 bisect 到具体版本。直接跳到最后版本会让错误归因变成黑盒。
+
+## 2. 升级前评估：按子系统读 migration guide
+
+### 2.1 migration guide 的结构
+
+每版迁移指南（如 `doc/releases/migration-guide-4.0.rst`）按领域分节：内核与通用 API、构建系统/Kconfig、Devicetree/binding、按子系统分节（ADC、Clock control、**eSPI**、Input、PWM、Sensors、Serial、Regulator、Watchdog、Shell、Flash map、MCUmgr、Bluetooth……）。
+
+EC 固件的高频命中节：**eSPI / Watchdog / Charger / ADC / Input（键盘）/ Serial / Flash map / MCUmgr / Shell / Trusted Firmware-M**。3.7 的指南里 Charger、eSPI、Watchdog、Input、Interrupt Controller、Serial、Regulator 均有独立小节；4.0 的指南里 ADC、Clock control、eSPI、Input、PWM、Serial、Flash map、MCUmgr、Shell 有独立小节。
+
+### 2.2 评估流程（半天工作量）
+
+1. **盘点依赖面**：列出本固件用到的子系统与模块（`prj.conf` 的 CONFIG、`west.yml` 的模块清单、驱动兼容字符串）。文档化这张清单——它是每次升级的固定输入
+2. **逐版扫指南**：对 3.7 → 目标版本之间的每一份 migration guide，**只读清单命中的小节**，每条命中记录"影响哪个文件/哪种用法"
+3. **扫 Kconfig 改名**：对清单里的每个 CONFIG 符号，在目标版本的源码里 grep 确认仍存在（改名通常伴随旧符号告警，但显式确认最稳）
+4. **扫 DT binding 改名**：对自用驱动的 `compatible` 与关键属性，在目标版本的 `dts/bindings/` 里确认存在
+5. **产出迁移清单**：影响面表格（变更 → 涉及文件 → 预估工作量），据此排期
+
+:::tip[评估的边界]
+评估只回答"影响多大、值不值得升"，**不要在评估期动手改代码**——那会让升级分支从第一天就带着半成品。
+:::
+
+## 3. west 工作区升级
+
+### 3.1 切换 manifest revision
+
+west 工作区的版本由 **manifest（`west.yml`）中 zephyr 与各模块的 revision** 决定（[west 与多仓库](/docs/zephyr-kernel/03_west_tool) 已详解 manifest 语法）。标准做法是**新建升级分支**，逐版推进：
+
+```bash
+git checkout -b upgrade/4.1        # 在你的固件仓库
+# 编辑 west.yml：zephyr 的 revision 改为目标 tag（如 v4.1.0）
+# 同时检查各 manifest 模块（hal、cmsis 等）的 revision 是否需要随版本联动
+
+west update                        # 按新 revision 同步全部模块
+west list                          # 确认每个仓库落位版本符合预期
+```
+
+要点：
+
+- **模块 revision 与 zephyr 版本强耦合**：上游每个版本的 `west.yml` 已写好与该版本匹配的模块 revision——以**目标版本的官方 west.yml 为准**整段替换，不要逐行合并
+- **vendor 模块**（如芯片厂 HAL/SDK manifest project）：revision 通常由芯片厂发布配套版本，对照其 release 说明更新；若厂商 fork 了上游模块，确认 fork 的 rebase 基线
+- `west update` 前 `git status` 确认工作区干净——模块仓库的本地改动会被 checkout 覆盖（有本地补丁的见 §7.2）
+
+### 3.2 构建系统前置差异
+
+新版本可能要求新的 CMake/Python/工具链最低版本（见目标版本 release note 的 "Required" 节）。先升级宿主工具链再编译，避免把工具链问题误判为代码问题。
+
+## 4. 编译错误逐类修复
+
+升级后的第一轮编译通常产生几十到几百个错误。**按类修复，不要逐个错误随机顺序修**：
+
+### 4.1 API 签名与语义变更
+
+**特征**：函数名没变，参数类型/个数/返回值变化；或明确的 deprecation 告警。
+
+**方法**：从 migration guide 对应小节拿官方迁移说明；指南没覆盖的，直接读目标版本的头文件与 API 实现确认新语义（尤其注意"参数没变但语义变了"的陷阱，如超时参数从阻塞变非阻塞的细节差异）。
+
+**deprecation 告警的定位**：上游被弃用的 API 在编译时给出指向替代品的告警，启用被弃用特性时 Kconfig 的 `DEPRECATED` 符号会被自动选中——**把所有 deprecation 告警清零后再处理硬错误**，它们是下一版硬错误的预告。
+
+### 4.2 Kconfig 符号改名
+
+**特征**：`unknown symbol` 告警、原配置静默失效（更危险）。
+
+**方法**：
+
+```bash
+# 1. 编译时留意 Kconfig 阶段的 warning（undefined symbol 提示）
+# 2. 对每个失效符号，在新版本源码里查去向：
+grep -rn "旧符号名" zephyr/Kconfig* zephyr/subsys/*/Kconfig*
+# 3. 上游若做了系统化改名，migration guide 的 Kconfig 小节会给出映射表
+```
+
+**验证**：升级前后各做一次 `build/zephyr/.config`，diff 后逐行确认旧符号的替代落位——**静默失效的 CONFIG 比编译错误危险十倍**。
+
+### 4.3 Devicetree 与 binding 变更
+
+**特征**：`DT_` 宏展开失败、属性类型不匹配、binding yaml 校验报错。
+
+**方法**：
+
+```bash
+# 1. 看目标版本的 binding 定义与变更说明（migration guide 的 Devicetree 小节）
+# 2. 检查你的 overlay/板级 dts 引用的 compatible 在新版本 dts/bindings/ 下仍存在：
+grep -rn "你的,compatible" zephyr/dts/bindings/
+# 3. 构建后对比生成的 devicetree_generated.h 关键宏是否如期展开
+```
+
+Devicetree 语法本身稳定的，变更集中在 binding（属性改名/类型变化/默认值调整）。板级 DT 的编写与适配基础见 [设备树与驱动适配](/docs/porting/03_devicetree_and_driver)。
+
+### 4.4 头文件与构建系统迁移
+
+**特征**：`fatal error: xxx.h: No such file`；CMake 目标名/属性变更。
+
+**方法**：头文件迁移通常是目录重组（如 `include/` → `include/zephyr/` 的历史迁移）——在新版本源码树里 `find` 新位置后批量替换 include 路径。CMake 报错优先看 release note 的 "Build system" 小节。
+
+## 5. 回归验证
+
+编译通过 ≠ 升级成功。三个维度的回归缺一不可：
+
+### 5.1 体积回归
+
+```bash
+# 升级前后各出一份报告（[链接与内存布局](/docs/zephyr-kernel/16_linker_and_memory_layout) §5 的方法）
+west build -t rom_report
+west build -t ram_report
+# 逐子系统对比，暴涨项回查：新默认 Kconfig？新模块被顺带拉入？
+```
+
+升级引入的体积变化通常来自**新版本的默认配置变更**——这是 `.config` diff（§4.2）的补充验证点。
+
+### 5.2 功能回归
+
+- **Twister 全量**：固件仓库与自建测试跑一遍（框架使用见 [测试框架](/docs/development/debug/06_test_framework)），上游同期改动过你依赖的子系统时，自建测试的断言也可能要更新
+- **bring-up 清单复跑**：[Bring-up 清单](/docs/porting/07_bringup_checklist) 的验证项（时钟、串口、eSPI、键盘、电池、热管理、PD）在目标板上全部复测——上游驱动层的变更只有上板才暴露
+- **实时性回归**：延迟预算表全部测量点重测（方法见 [实时性测量与追踪](/docs/zephyr-kernel/17_measurement_and_tracing) §8），max 超预算 ±20% 排查后再放行
+
+### 5.3 长稳测试
+
+版本升级改变了调度细节与驱动时序，**24h+ 压力测试**是发现低频竞态的最后防线。复用现有压测脚本，对比升级前的故障基线。
+
+## 6. 回滚与分支策略
+
+### 6.1 分支模型
+
+```text
+main（锁定 LTS 基线，只进发布）
+ ├─ upgrade/4.x        升级工作分支，逐版一个 commit
+ └─ hotfix/*           当前 LTS 基线上的紧急修复（升级期间照常维护）
+```
+
+- 升级分支**不夹带任何功能变更**——升级 commit 与功能 commit 混在一个 diff 里是 bisect 的死刑
+- 每完成一个版本步进（3.7→4.0），跑完 §5 的最小回归（编译 + Twister + 快速功能冒烟）再进下一个版本
+- 升级期间 main 上发现的 bug 照常修——修复同步 cherry-pick 到升级分支的基线，避免升级落地时丢修复
+
+### 6.2 vendor fork 的补丁托管
+
+芯片厂模块或你直接改过的上游模块，补丁不要散落在模块仓库里（`west update` 会丢）。两种托管方式：
+
+1. **推荐：manifest module 方式**——本地补丁做成独立仓库（或 fork），`west.yml` 里指向你的 revision。补丁即代码，走 review
+2. **轻量：模块仓库内分支**——在模块仓库建 `ec-patches/<zephyr-version>` 分支承载补丁，west.yml 指向该分支。简单但容易随时间腐化，适合补丁量小的过渡期
+
+具体操作语法见 [west 与多仓库](/docs/zephyr-kernel/03_west_tool) 的 Manifest 详解与多仓库管理小节。
+
+## 7. 升级实操清单
+
+| # | 步骤 | 产出 | 检查点 |
+|---|------|------|--------|
+| 1 | 盘点依赖面（CONFIG/模块/compatible 清单） | 依赖清单文档 | 与量产固件实际一致 |
+| 2 | 逐版读 migration guide（命中节） | 影响面表格 | 每条影响落到文件 |
+| 3 | 宿主工具链升级到新版本要求 | 环境就绪 | release note Required 节逐项核对 |
+| 4 | 新分支，west.yml 逐版步进 + west update | 可构建工作区 | west list 版本符合预期 |
+| 5 | 清零 deprecation 告警 | 告警清零 | 下一版硬错误预告已消化 |
+| 6 | 按类修复编译错误（§4 顺序） | 编译通过 | .config diff 逐行确认 |
+| 7 | 体积回归（report 对比） | 体积 diff 报告 | 无异常暴涨或已归因 |
+| 8 | Twister 全量 + bring-up 清单复跑 | 测试报告 | 全部通过 |
+| 9 | 实时性测量点重测 | 预算表更新 | max 在预算内 |
+| 10 | 24h+ 长稳测试 | 稳定性报告 | 对比升级前基线 |
+| 11 | 合入 main，升级分支归档 | 新基线 | commit 信息含版本步进记录 |
+
+## 8. 学习总结
+
+- **默认锁定 LTS，按 CVE 与真实需求规划升级**；跨多版本时逐版步进、每版一个 commit，保住 bisect 能力
+- 升级评估 = 依赖清单 × 每版 migration guide 的命中小节（EC 高频：eSPI/Watchdog/Charger/ADC/Input/Serial/Flash map/MCUmgr/Shell），半天出影响面表格
+- west 升级以**目标版本官方 west.yml 整段为准**，模块 revision 与 zephyr 版本强耦合；vendor fork 补丁用 manifest module 托管，不散落在模块仓库
+- 修复顺序：**deprecation 告警清零 → 按类修硬错误（API 签名/Kconfig 改名/DT binding/头文件）**；`.config` diff 逐行确认，防配置静默失效
+- 回归三维：体积（report 对比）、功能（Twister + bring-up 清单复跑）、长稳（24h+）；实时性预算测量点重测后放行
+- 升级分支不夹带功能变更；升级期间 main 的修复同步 cherry-pick 保基线
+
+## 9. 参考资源
+
+- [Zephyr releases（版本与下载）](https://github.com/zephyrproject-rtos/zephyr/releases)
+- [migration guide 目录（main）](https://github.com/zephyrproject-rtos/zephyr/tree/main/doc/releases) —— 每版一份 `migration-guide-X.Y.rst`
+- [migration guide to 4.0](https://github.com/zephyrproject-rtos/zephyr/blob/v4.0.0/doc/releases/migration-guide-4.0.rst) —— 3.7 LTS 后首个 minor 的迁移说明
+- [migration guide to 3.7](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/doc/releases/migration-guide-3.7.rst) —— 理解指南结构的样例（EC 相关小节：Charger / eSPI / Watchdog / Input / Serial / Regulator）
+- [zephyr 默认 west.yml（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/west.yml) —— 模块 revision 对照的基准
+- 内部衔接：[west 与多仓库](/docs/zephyr-kernel/03_west_tool)（manifest 语法与 workspace 操作）、[设备树与驱动适配](/docs/porting/03_devicetree_and_driver)（binding 与 overlay 基础）、[链接脚本与内存布局](/docs/zephyr-kernel/16_linker_and_memory_layout)（体积对比方法）、[测试框架](/docs/development/debug/06_test_framework)（Twister 回归）、[Bring-up 清单](/docs/porting/07_bringup_checklist)（上板复测项）、[实时性测量与追踪](/docs/zephyr-kernel/17_measurement_and_tracing)（延迟预算回归）

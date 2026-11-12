@@ -1,0 +1,284 @@
+---
+title: "链接脚本与内存布局"
+description: "Zephyr 镜像的内存分区、链接脚本来历、iterable sections 链接期注册机制、.noinit 重启保留区、map 文件解读与 FLASH/RAM 溢出排查"
+---
+
+:::note[阅读提示]
+本章节涵盖 Zephyr RTOS 的通用技术概念。芯海 EC 平台的具体应用请参考 **开发指南** 与 **移植指南**。
+:::
+
+:::info[学习目标]
+通过本章学习，你将掌握：
+
+- Zephyr 镜像的分区组成：`.text` / `.rodata` / `.data` / `.bss` / `.noinit` 各自的内容与归属
+- 链接脚本从哪来：Devicetree 内存区如何变成 `MEMORY` 指令，何时需要自定义链接脚本
+- iterable sections 机制：`STRUCT_SECTION_*` 宏族如何在链接期"自动注册"对象
+- 用 `.noinit` 保存跨重启数据——EC 重启原因统计的经典实现
+- 读 `.map` 文件、用 `rom_report` / `ram_report` 定位体积与内存问题
+- 诊断并修复 `region FLASH overflowed` 类链接错误
+:::
+
+## 概述
+
+把固件从"能跑"带到"量产"，绕不开两个问题：**FLASH 和 RAM 各被什么占了**，以及**为什么这段代码没进预期的内存区**。回答它们需要理解 Zephyr 的链接层——它比裸机项目的 `main.c + startup.s` 多了一层"链接期注册"机制，也是很多从 C51 / 裸机迁移过来的工程师最陌生的一块。
+
+本章从分区总览讲起，拆解 iterable sections 这个 Zephyr 遍地使用的机制，最后落到日常排查动作：读 map、量体积、修溢出。所有示例均可在 `native_sim` 上免硬件运行（体积分析部分推荐同时在一块真实 EC 目标板上做对照）。
+
+## 1. 内存分区总览
+
+### 1.1 五个基础分区
+
+Zephyr 镜像的分区与标准 C 工具链一致，但每个分区里都塞了不少 Zephyr 特有的内容：
+
+| 分区 | 内容 | 典型来源 | RAM 版归属 |
+|------|------|----------|-----------|
+| `.text` | 代码、异常/中断向量 | 所有函数、ISR | 常驻 FLASH（XIP） |
+| `.rodata` | `const` 数据、字符串、**注册到 ROM 段的内核对象** | `static const`、Device Tree 生成的常量 | FLASH |
+| `.data` | 已初始化的全局/静态变量 | `static int x = 5;` | RAM（启动时从 FLASH 拷贝） |
+| `.bss` | 未初始化/零初始化的全局与静态变量 | `static uint8_t buf[256];` | RAM（启动时清零） |
+| `.noinit` | 不做任何初始化的 RAM 区 | `__attribute__((__section__(".noinit")))` | RAM（重启不清零，见 §4） |
+
+:::tip[XIP 与 EC]
+EC 芯片几乎都是 XIP（Execute In Place）：`.text`/`.rodata` 留在 FLASH 里原地执行，RAM 只放 `.data`/`.bss`/栈/堆。这意味着 **FLASH 紧张时优化代码段，RAM 紧张时优化数据段**，两者不能互相挪。非 XIP 目标（如 `native_sim`）则把代码拷进 RAM——map 文件里的分区归属会不同，做体积对比时注意目标一致。
+:::
+
+### 1.2 分区之外的"注册段"
+
+除了五个基础分区，Zephyr 会在 `.text`/`.rodata`/`.ram` 里开辟大量**内核自用的注册段**，每个段由一个 `Z_LINK_ITERABLE_*` 宏生成（下一节展开）：
+
+- `_device_list` —— 所有 `DEVICE_DEFINE` 定义的设备对象，启动时按链接顺序初始化
+- `_log_links` / `_log_static` —— log 子系统的日志源
+- `_settings_handler` —— settings 子系统的 handler 注册表（见 [内核子系统](/docs/zephyr-kernel/08_subsystems)）
+- `_zbus_channel` / `_zbus_observer` —— zbus 通道与观察者表（见 [异步与消息总线](/docs/zephyr-kernel/13_async_messaging)）
+- `z_kobject` / `_k_object_assignment` —— userspace 的内核对象元数据（见 [用户态与权限](/docs/zephyr-kernel/14_userspace)）
+
+理解这些段的意义：**你在 C 文件里写一个静态宏定义，链接器替你把它"登记进表"**——不需要手工维护注册数组，这正是 Zephyr 静态初始化体系（见 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)）的底层支撑。
+
+## 2. 链接脚本从哪来
+
+### 2.1 三层生成链
+
+裸机项目里你手写一个 `xxx.ld`；Zephyr 不这么干——链接脚本是**构建时生成的**，链条是：
+
+1. **Devicetree 提供 MEMORY**：`.dts` 里的 `soc` 节点内存定义（flash/sram 大小与起始地址）被构建系统提取，生成 `linker_memory_map.ld`；`include/zephyr/linker/devicetree_regions.h` 提供了把任意 DT 内存节点变成 `MEMORY` 区块的宏
+2. **架构模板拼装**：`arch/<arch>/include/kernel_arch_data.ld` 与 `include/zephyr/linker/common-*.ld`（`common-rom.ld`、`common-ram.ld`、`common-noinit.ld` 等）负责把 §1.2 的注册段按固定顺序放进各分区
+3. **组合输出**：`zephyr/include/generated/linker.cmd` 是最终喂给 `ld` 的产物，构建目录里可以打开直接看
+
+```text
+你的 dts（flash/sram 大小）
+        ↓ 构建系统提取
+linker_memory_map.ld（MEMORY 定义）
+        ↓ include
+common-rom.ld / common-ram.ld / common-noinit.ld（注册段）
+        ↓ 生成
+build/zephyr/include/generated/linker.cmd → ld → zephyr.elf / zephyr.map
+```
+
+### 2.2 何时需要自定义链接脚本
+
+绝大多数项目**不需要**碰链接脚本——内存大小改 DT、代码分区改 Kconfig 就够了。需要自定义的场景：
+
+- **把特定代码/数据放到指定物理区域**：如把频繁执行的校准代码放进独立 RAM 区、把安全固件区隔到独立 FLASH 分区
+- **对接 Bootloader 的内存约定**：向量表偏移、保留区（MCUboot 场景由 `CONFIG_BOOT_*` 自动处理，通常无需手写）
+
+开启方式（[Kconfig](/docs/zephyr-kernel/06_config_system) 中，v3.7.0 `Kconfig.zephyr`）：
+
+```ini
+# 有自定义链接脚本时开启
+CONFIG_HAVE_CUSTOM_LINKER_SCRIPT=y
+# 指定脚本路径（相对应用目录）
+CONFIG_CUSTOM_LINKER_SCRIPT="linker.ld"
+```
+
+自定义脚本里**不要**从头重写分区定义——正确姿势是 `#include <autoconf.h>` 后，沿用 `MEMORY` 定义，只插入你自己的 `SECTION`。可参考 `include/zephyr/linker/` 下各 `.ld` 片段的写法。
+
+## 3. iterable sections：链接期注册机制
+
+### 3.1 问题：C 语言怎么"自动建表"
+
+设想 log 子系统：全工程散布着上百个日志源，启动时要拿到完整清单。裸机做法是手工维护一个数组——每个新增日志源都要记得去登记。Zephyr 的解法是**链接器建表**：
+
+1. 每个日志源通过宏声明，展开成 `__attribute__((__section__("._log_static.static.<名字>")))` 的静态结构
+2. 链接脚本用 `SORT_BY_NAME` 把所有同名前缀的输入段排进连续内存，首尾写两个符号 `_log_static_list_start` / `_log_static_list_end`
+3. 运行时遍历首尾符号之间的连续数组——清单自动完整、天然有序
+
+### 3.2 运行时 API：STRUCT_SECTION 宏族
+
+应用最常用的接口在 `include/zephyr/sys/iterable_sections.h`（v3.7.0）：
+
+| 宏 | 作用 |
+|----|------|
+| `STRUCT_SECTION_ITERABLE(struct_type, varname)` | 定义一个落入 iterable section 的静态结构 |
+| `STRUCT_SECTION_FOREACH(struct_type, varname)` | 遍历该 section 的全部实例 |
+| `STRUCT_SECTION_START/END(struct_type)` | 首尾指针（配合 `STRUCT_SECTION_START_EXTERN/END_EXTERN` 在其他编译单元使用） |
+| `STRUCT_SECTION_GET(struct_type, i)` | 按索引取第 i 个实例 |
+| `STRUCT_SECTION_COUNT(struct_type)` | 实例总数 |
+| `STRUCT_SECTION_ITERABLE_ALTERNATE(struct_type, tag, varname)` | 定义到带 tag 的备用段（同一结构类型分多表注册时用） |
+
+一个最小可运行示例（`native_sim` 可直接跑）：
+
+```c
+#include <zephyr/kernel.h>
+#include <zephyr/sys/iterable_sections.h>
+#include <zephyr/logging/log.h>
+LOG_MODULE_REGISTER(iter_demo);
+
+/* 1. 定义结构类型 */
+struct sensor_probe {
+	const char *name;
+	int (*read)(void);
+};
+
+/* 2. 各自声明实例——散布在不同文件也行，链接器会汇成一张表 */
+static const STRUCT_SECTION_ITERABLE(sensor_probe, probe_temp) = {
+	.name = "temp",
+	.read = read_temp,
+};
+static const STRUCT_SECTION_ITERABLE(sensor_probe, probe_vbat) = {
+	.name = "vbat",
+	.read = read_vbat,
+};
+
+/* 3. 运行时遍历——无需任何手工注册数组 */
+void probe_all(void)
+{
+	STRUCT_SECTION_FOREACH(sensor_probe, p) {
+		LOG_INF("probe %s -> %d", p->name, p->read());
+	}
+}
+```
+
+:::warning[注意]
+`STRUCT_SECTION_ITERABLE` 定义的是**静态存储期**对象，宏内部已含 `static`，不要重复写 `static`；定义在函数外。链接顺序即遍历顺序（同名段按名字排序），**不要依赖跨文件的声明顺序**。
+:::
+
+### 3.3 链接侧：Z_LINK_ITERABLE 宏族
+
+`include/zephyr/linker/iterable_sections.h`（v3.7.0）提供链接脚本侧的宏，自定义链接脚本时会用到：
+
+- `Z_LINK_ITERABLE(struct_type)` —— 标准版，按名字排序，`KEEP()` 防 GC
+- `Z_LINK_ITERABLE_NUMERIC(struct_type)` —— 按编号排序（`.instance_<n>` 数字尾缀，用于 init 优先级类场景）
+- `Z_LINK_ITERABLE_GC_ALLOWED(struct_type)` —— 允许被垃圾回收（无引用即删除）
+- `Z_LINK_ITERABLE_ALIGNED(struct_type, align)` —— 对齐版
+
+内核各子系统在 `common-ram.ld`/`common-rom.ld` 里就是用这些宏布段的。想给自家模块做"链接期注册"，直接复用 `STRUCT_SECTION_*` 即可，不必手写段定义。
+
+## 4. .noinit：跨重启保留数据
+
+### 4.1 场景与原理
+
+EC 的经典需求：**记录上次为什么重启**。软复位（看门狗、`sys_reboot`）不清 RAM，只有上电复位才清。`.bss`/`.data` 启动时会被清零/拷贝初始化，没法幸存；`.noinit` 区**跳过初始化**，软复位后内容原样保留。
+
+Zephyr 在 `include/zephyr/linker/common-noinit.ld` 中定义了 `.noinit` 输出段。使用方式：
+
+```c
+/* 重启计数器——软复位后保留 */
+__attribute__((__section__(".noinit")))
+static uint32_t reboot_count;
+
+void save_reboot_info(uint32_t cause)
+{
+	reboot_count++;
+	/* 附加信息也可以放到同一保留区 */
+}
+```
+
+:::warning[.noinit 三条纪律]
+1. **首次上电时内容是随机的**——读取前必须有合法性标记（magic number + 校验），否则把噪声当数据
+2. 放进去的变量**不能有任何初始化期望**，`__attribute__` 会绕过启动时的清零/拷贝
+3. 调试器烧录/复位、部分芯片的 RAM 掉电保持策略（retention 是否覆盖该区）都影响幸存性——量产前在真实目标板上验证，不要只信 native_sim
+:::
+
+### 4.2 与芯片级保留内存的关系
+
+部分 SoC 支持只在待机/深睡时保电的 RAM 区（retention RAM）。若需要"睡眠保留 + 复位保留"叠加，通常要把保留数据放进 DT 指定的专用内存节点并在自定义链接脚本中布段——此时用 §2.2 的自定义脚本机制。纯软复位保留用 `.noinit` 即可。
+
+## 5. map 文件与体积分析
+
+### 5.1 三层工具
+
+| 工具 | 粒度 | 用法 |
+|------|------|------|
+| `west build -t ram_report` / `-t rom_report` | 按子系统/分区汇总 | [系统优化](/docs/zephyr-kernel/10_optimization) 已详述，日常首选 |
+| `zephyr.map` | 符号级（每个符号的地址与大小） | 构建目录 `build/zephyr/zephyr.map`，定位"谁占了这段" |
+| `nm` / `bloaty` / `puncover` | 符号排序 / 增量对比 / 交互式 | 深挖与版本对比 |
+
+### 5.2 读 map 的三个动作
+
+```bash
+# 1. 找某个符号落在哪个分区、多大
+grep " probe_temp$" build/zephyr/zephyr.map
+
+# 2. 按大小排序列出最大的符号（找优化目标）
+arm-none-eabi-nm --size-sort --print-size build/zephyr/zephyr.elf | tail -20
+
+# 3. 对比两次构建的体积增量（装了 bloaty 的话）
+bloaty -d symbols build_new/zephyr/zephyr.elf -- build_old/zephyr/zephyr.elf
+```
+
+拿到一个符号后，map 里它在 `linker.cmd` 中的段名直接告诉你归属：`_DEVICE_DTB_SECTION`、`._zbus_channel.static.*`、`.bss`……如果某变量出现在了意料之外的段，回查它的定义宏。
+
+:::tip[EC 体积排查的常见结论]
+- 体积暴涨的罪魁往往是**某个静态结构数组被 Iterable section 收编后整段 KEEP**（GC 优化被禁用），检查是否注册了用不到的实例
+- `.bss` 突然变大：新加的 `static` 大数组——栈和堆之外它是 RAM 第一大户（栈尺寸测量见 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)）
+- XIP 目标上 `.data` 意外变大：被 `const` 修饰漏掉的大查找表从 FLASH 掉进了 RAM
+:::
+
+## 6. 溢出与链接错误排查
+
+### 6.1 典型错误与含义
+
+```text
+region FLASH overflowed by 2048 bytes
+region SRAM overflowed by 512 bytes
+section `.noinit' will not fit in region `RAM'
+cannot move location counter backwards for section `.bss'
+```
+
+构建期溢出**一定是好事**——它发生在烧录前。真正危险的是运行期栈溢出（诊断见 [异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis)），两者别混淆。
+
+### 6.2 修法顺序
+
+1. **先看 report 再动手**：`ram_report` / `rom_report` 找出增量来源，而不是盲目裁功能
+2. **确认 DT 与实际芯片一致**：内存大小写错（如把 256KB SRAM 写成 128KB）或分区被 Bootloader 占用没扣
+3. **查 GC 与 KEEP**：`CONFIG_LINKER_GC_MINIMAL`（若启用）是否被注册段破坏；未使用的注册实例能否移除
+4. **裁剪**：按 [系统优化](/docs/zephyr-kernel/10_optimization) 的 Kconfig 裁剪清单处理
+5. **最后手段才是自定义分区**：§2.2 的自定义脚本，或给 DT 增加内存节点
+
+## 7. 实操任务
+
+以下任务在 `native_sim` 上免硬件完成：
+
+```bash
+# 1. 构建并生成体积报告
+west build -b native_sim samples/hello_world -p
+west build -t rom_report
+west build -t ram_report
+
+# 2. 打开生成的链接命令文件，找 3 个 iterable section 的输出段定义
+less build/zephyr/include/generated/linker.cmd
+# 观察点：._zbus_channel.static、_log_static、.noinit 的段定义与首尾符号
+
+# 3. 在 map 里找到 hello_world 的 main 与 LOG_MODULE_REGISTER 生成的静态结构
+grep " main$" build/zephyr/zephyr.map
+
+# 4. 把 §3.2 的 STRUCT_SECTION 示例放进一个最小应用构建运行，
+#    确认 FOREACH 输出顺序与定义顺序无关（调换两个实例定义位置验证）
+```
+
+**进阶**：在真实 EC 目标板上重复步骤 1-2，对比 XIP 与 native_sim 的分区归属差异（重点看 `.text` 在哪个 region、`.data` 从哪个 region 加载）。
+
+## 8. 学习总结
+
+- Zephyr 镜像 = 基础五分区（`.text`/`.rodata`/`.data`/`.bss`/`.noinit`）+ 内核注册段；EC 上 XIP 决定代码留 FLASH、数据进 RAM
+- 链接脚本由 **Devicetree → 架构模板 → 生成 linker.cmd** 三层合成；自定义链接脚本是最后手段，`CONFIG_CUSTOM_LINKER_SCRIPT` 挂载
+- **iterable sections 是 Zephyr 的"链接器自动建表"机制**：`STRUCT_SECTION_ITERABLE` 声明 + `STRUCT_SECTION_FOREACH` 遍历，设备/log/settings/zbus 全靠它；自定义模块可直接复用
+- `.noinit` 保存跨软复位数据（重启原因、崩溃现场），必须配 magic + 校验，且在真实目标板验证幸存性
+- 体积问题按 **report → map → nm/bloaty** 逐级放大定位；构建期溢出按"先 report 再裁剪"的顺序修
+
+## 9. 参考资源
+
+- [include/zephyr/linker/ 目录（v3.7.0 源码）](https://github.com/zephyrproject-rtos/zephyr/tree/v3.7.0/include/zephyr/linker) —— `common-*.ld`、`iterable_sections.h`、`devicetree_regions.h`
+- [include/zephyr/sys/iterable_sections.h（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/include/zephyr/sys/iterable_sections.h) —— `STRUCT_SECTION_*` 运行时宏定义
+- [custom linker script Kconfig（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/Kconfig.zephyr) —— `HAVE_CUSTOM_LINKER_SCRIPT` / `CUSTOM_LINKER_SCRIPT`
+- 内部衔接：[系统优化](/docs/zephyr-kernel/10_optimization)（report 与 Kconfig 裁剪）、[对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)（静态分配与栈测量）、[异步与消息总线](/docs/zephyr-kernel/13_async_messaging)（zbus 段的运用方）、[驱动模型](/docs/zephyr-kernel/07_driver_model)（DEVICE_DEFINE 注册侧）

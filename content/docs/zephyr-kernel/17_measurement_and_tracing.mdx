@@ -1,0 +1,379 @@
+---
+title: "实时性测量与追踪"
+description: "从延迟预算到实测工具——k_uptime/k_cycle 时间源、timing 子系统高精度计时、thread analyzer 栈监控、tracing 子系统与 SystemView、中断延迟实测方法论"
+---
+
+:::note[阅读提示]
+本章节涵盖 Zephyr RTOS 的通用技术概念。芯海 EC 平台的具体应用请参考 **开发指南** 与 **移植指南**。
+:::
+
+:::info[学习目标]
+通过本章学习，你将掌握：
+
+- 延迟预算思维：把"感觉慢"变成"哪一段超了预算多少微秒"
+- 选对时间源：`k_uptime_*`（毫秒）与 `k_cycle_get_*`（硬件周期）的适用边界与溢出陷阱
+- 用 timing 子系统（`CONFIG_TIMING_FUNCTIONS`）做高精度代码段测量
+- 用 `CONFIG_THREAD_RUNTIME_STATS` + `kernel threads` shell 看每个线程的真实执行时间
+- 用 thread analyzer 持续监控线程栈使用，与静态测量互相印证
+- 用 tracing 子系统 / SystemView 看到线程切换、ISR 进出的完整时间线
+- 掌握中断延迟的实测方法论：GPIO 翻转 + 逻辑分析仪 + 分段归因
+:::
+
+## 概述
+
+"风扇响应延迟了"和"风扇响应延迟了 380ms，其中 i2c 读取占 310ms、线程调度占 45ms"是两种完全不同的工程状态。前者只能靠猜，后者已经完成了一半修复。实时性问题的**不可修复性来自不可见性**——本章的目标就是把 Zephyr 系统里的时间流逝变成可测量的量。
+
+工具栈从轻到重分四层：时间源 API（手工埋点）→ timing 子系统（高精度埋点）→ 运行时统计与 analyzer（免埋点全景）→ tracing/SystemView（全事件时间线）。每层解决不同粒度的问题，先掌握轻的，再按需上重的。
+
+## 1. 延迟预算思维
+
+### 1.1 先写预算表，再谈优化
+
+在测任何东西之前，先回答"多少算慢"。EC 固件的典型延迟预算：
+
+| 路径 | 预算 | 判据来源 |
+|------|------|----------|
+| 按键扫描周期 | 10–50 ms（Kconfig 配置） | 手感与功耗平衡 |
+| 按键事件 → 主机报告 | < 20 ms | 用户体验 |
+| 充电电流调整响应 | < 500 ms | 电池规格书 |
+| 风扇转速调整响应 | 1–2 s | 热容与噪声 |
+| AC 插入 → 系统通知 | < 100 ms | 用户体验 |
+| 看门狗喂狗周期余量 | > 2× 最长任务周期 | 可靠性 |
+
+预算表写进 [bring-up 清单](/docs/porting/07_bringup_checklist) 的验收项，每个预算对应一个测量点（§7 给出落表方法）。没有预算的优化都是玄学。
+
+### 1.2 平均值会骗人
+
+实时性关心的是 **worst-case**，不是平均。`k_sleep` 抖动 1ms 无所谓，但"1000 次里 1 次 200ms"的那一次就是用户看到卡顿的一次。因此：
+
+- 测量时**记录分布**（max/p99），不只看平均
+- 打印测量结果时保留最大值寄存器（`if (dt > max) max = dt;`）
+- 负载最重的场景（主机满载通信 + 充电 + 温度高）才是验收场景，空载测量无意义
+
+## 2. 时间源：选对"尺子"
+
+### 2.1 两把尺子
+
+| API | 单位/来源 | 分辨率 | 适用 | ISR 可用 |
+|-----|-----------|--------|------|----------|
+| `k_uptime_get_32()` | 毫秒，系统 tick | 1 tick（默认 10ms@100Hz tick rate） | 秒级逻辑（超时、节流、时间戳） | ✅ |
+| `k_uptime_delta()` | 毫秒，并自动重置参考点 | 1 tick | 周期任务自检"上一轮到这一轮过了多久" | ✅ |
+| `k_cycle_get_32()` / `k_cycle_get_64()` | 硬件周期数 | 亚微秒级 | 微秒级测量（§3 的底层） | ✅ |
+
+`k_uptime_get_32()` 返回 32 位毫秒数，**约 49.7 天回绕**——长期运行的 EC 用它做跨周期逻辑时要考虑回绕（Zephyr 内部的超时比较已处理，自己的裸比较没有）。`k_cycle_get_32()` 的回绕周期取决于 CPU 频率（180MHz 下约 23.8 秒），**禁止用它做跨秒差值**。
+
+```c
+/* 周期任务自检：调度延迟可视化 */
+static int64_t last_run;
+void scan_thread_fn(void)
+{
+	int64_t gap = k_uptime_delta(&last_run);
+	if (gap > SCAN_PERIOD_MS + 10) {
+		LOG_WRN("scan period drifted: %lld ms", gap);
+	}
+	/* ... 实际扫描 ... */
+}
+```
+
+### 2.2 手工埋点的最小模式
+
+```c
+uint32_t t0 = k_cycle_get_32();
+do_something();
+uint32_t dt = k_cycle_get_32() - t0;   /* 硬件周期数 */
+/* 换算：dt_us = dt / (sys_clock_hw_cycles_per_sec() / 1000000) */
+LOG_INF("took %u cycles (~%u us)", dt,
+        dt / (sys_clock_hw_cycles_per_sec() / USEC_PER_SEC));
+```
+
+够用，但有三个缺陷：换算要自己管、精度受限于读数开销、频繁 LOG 反过来污染测量。小量埋点可以这样做；成规模的测量交给 §3。
+
+## 3. timing 子系统：高精度测量
+
+`CONFIG_TIMING_FUNCTIONS` 启用后，Zephyr 提供 `include/zephyr/timing/timing.h`（v3.7.0）的专用测量 API——用最高分辨率的硬件计数器（如 DWT 周期计数器），带好换算函数：
+
+```c
+#include <zephyr/timing/timing.h>
+
+void measure_init(void)
+{
+	timing_init();          /* 初始化所选计数器 */
+	timing_start();         /* 开始计时窗口 */
+}
+
+void measure_code_path(void)
+{
+	timing_t t0 = timing_counter_get();
+	i2c_burst_read_dt(&bus, REG_MEAS, buf, sizeof(buf));
+	timing_t t1 = timing_counter_get();
+
+	uint64_t cycles = timing_cycles_get(&t0, &t1);
+	LOG_INF("i2c read: %llu ns (avg %llu ns)",
+		timing_cycles_to_ns(cycles),
+		timing_cycles_to_ns_avg(cycles, 1));
+}
+
+void measure_exit(void)
+{
+	timing_stop();
+}
+```
+
+v3.7.0 的完整 API 面（均已在 doxygen 核实）：
+
+| 函数 | 作用 |
+|------|------|
+| `timing_init()` / `timing_start()` / `timing_stop()` | 初始化与测量窗口控制 |
+| `timing_counter_get()` | 取当前计数（返回 `timing_t`） |
+| `timing_cycles_get(&start, &end)` | 两点间周期差 |
+| `timing_cycles_to_ns(cycles)` / `timing_cycles_to_ns_avg(cycles, count)` | 换算纳秒（含均值） |
+| `timing_freq_get()` / `timing_freq_get_mhz()` | 计数器频率 |
+
+:::warning[注意测量自身的开销]
+`timing_counter_get()` 本身有几十到上百纳秒的开销（跨核/跨总线读计数器更贵）。测量 < 1μs 的目标时，这段开销不可忽略——惯用做法是**空转基准校准**：先测 1000 次连续两次 `counter_get` 的空差值，再从结果中扣除。
+:::
+
+`CONFIG_TIMING_FUNCTIONS` 只编译进这些函数；若内核其他部件依赖启动期初始化，会自动选中 `TIMING_FUNCTIONS_NEED_AT_BOOT`。实测开销极小，常驻开启无妨。
+
+## 4. 线程运行时统计：免埋点看"谁在烧 CPU"
+
+### 4.1 开启与读取
+
+埋点回答"这段代码多快"，但"CPU 到底忙在哪"需要**免埋点**的统计视角。v3.7.0 的路径：
+
+```ini
+# prj.conf
+CONFIG_THREAD_RUNTIME_STATS=y   # 收集每线程执行时间
+CONFIG_KERNEL_SHELL=y           # kernel shell 命令（非 SHELL_MINIMAL 时默认开启）
+```
+
+```text
+uart:~$ kernel threads
+...每个线程一行：栈使用 + 执行时间（cycles 与 %）...
+Total CPU cycles: ... （全系统合计，来自 k_thread_runtime_stats_all_get）
+```
+
+shell 的 `kernel threads` 命令在 `CONFIG_THREAD_RUNTIME_STATS` 开启时会打印每个线程的运行时统计与全系统合计（实现在 `subsys/shell/modules/kernel_service.c`，v3.7.0 已核实）。API 侧对应：
+
+```c
+k_thread_runtime_stats_t ts;
+k_thread_runtime_stats_get(k_current_get(), &ts);   /* 单线程 */
+k_thread_runtime_stats_all_get(&ts);                /* 全系统 */
+```
+
+### 4.2 怎么用它定位问题
+
+- **CPU 忙但不知道忙在哪** → 看 `kernel threads` 的执行时间占比，第一名的线程就是嫌疑人
+- **idle 线程占比低于预期** → 系统没有睡够，对照 [功耗优化](/docs/best-practices/02_power_optimization) 查唤醒源
+- **怀疑 workqueue 被占满** → `sysworkq` 线程的执行时间异常高即坐实（workqueue 阻塞问题见 [内核机制](/docs/zephyr-kernel/05_kernel_mechanisms) §3.6）
+
+:::tip[与功耗测量的分工]
+`THREAD_RUNTIME_STATS` 给的是"CPU 时间分配"，不是功耗。低功耗验收要电流表/功耗分析仪（方法论见功耗优化页），本章工具回答"时间去哪了"，两者互补不互替。
+:::
+
+## 5. thread analyzer：栈使用的持续监控
+
+[对象生命周期](/docs/zephyr-kernel/15_object_lifecycle) 讲了用 `k_thread_stack_space_get` 做**一次性**栈测量；thread analyzer 解决的是**持续监控**——线程栈的实际峰值随代码演进变化，量产前最后一轮回归时必须复查。
+
+```ini
+# prj.conf
+CONFIG_THREAD_ANALYZER=y                # 主开关（subsys/debug/Kconfig）
+CONFIG_THREAD_ANALYZER_USE_LOG=y        # 用 log 输出（或 USE_PRINTK 用 printk）
+CONFIG_THREAD_ANALYZER_AUTO=y           # 周期自动打印（间隔可配）
+CONFIG_THREAD_ANALYZER_ISR_STACK_USAGE=y # 连 ISR 栈一起监控
+```
+
+或手动触发（v3.7.0 API，`zephyr/debug/thread_analyzer.h`）：
+
+```c
+#include <zephyr/debug/thread_analyzer.h>
+
+void dump_stack_now(void)   /* shell 命令或故障时调用 */
+{
+	thread_analyzer_print();            /* 打印全部线程栈统计 */
+	/* 或带回调自定义处理： */
+	thread_analyzer_run(my_cb);         /* void my_cb(struct thread_analyzer_info *info) */
+}
+```
+
+每线程输出栈尺寸、当前使用、峰值使用。与静态测量（`CONFIG_INIT_STACKS` + `k_thread_stack_space_get`）的区别：analyzer 立即可读、覆盖全线程，适合回归巡检；静态接口精确到单线程，适合专项验证。**两者都要 `CONFIG_INIT_STACKS=y` 才有意义**（预填充栈供识别）。
+
+:::warning[监控代码不要进量产]
+`CONFIG_THREAD_ANALYZER` 与 `CONFIG_INIT_STACKS` 都有可观的体积与运行开销，属于诊断配置——量产固件用 [系统优化](/docs/zephyr-kernel/10_optimization) 的清单裁掉。
+:::
+
+## 6. tracing 子系统与 SystemView
+
+### 6.1 tracing 子系统的组成
+
+前面工具都是"抽样看"，tracing 是**全事件流**：内核在每个调度点、ISR 进出、每个同步原语操作上发事件，由 backend 序列化输出。v3.7.0 的 Kconfig 结构（`subsys/tracing/Kconfig` 已核实）：
+
+```ini
+# 主开关
+CONFIG_TRACING=y
+
+# 事件格式：CTF（Common Trace Format，配合 trace compass 等工具）
+CONFIG_TRACING_CTF=y
+
+# 输出后端（四选一，v3.7.0 可用项）
+CONFIG_TRACING_BACKEND_UART=y     # 串口（最常用）
+CONFIG_TRACING_BACKEND_RAM=y      # 环形缓冲区留 RAM，事后 dump（适合无串口现场）
+CONFIG_TRACING_BACKEND_POSIX=y    # native_sim 专用，直接写文件
+CONFIG_TRACING_BACKEND_USB=y      # USB CDC
+
+# 按对象类开关事件源
+CONFIG_TRACING_THREAD=y
+CONFIG_TRACING_ISR=y
+CONFIG_TRACING_WORK=y
+CONFIG_TRACING_SEMAPHORE=y
+CONFIG_TRACING_MUTEX=y
+
+# 对象跟踪（对象创建/删除的注册表，配合 host 端工具）
+CONFIG_TRACING_OBJECT_TRACKING=y
+```
+
+### 6.2 SystemView：可视化时间线
+
+[系统优化](/docs/zephyr-kernel/10_optimization) 已给出 SystemView 的快速上手配置（`CONFIG_SEGGER_SYSTEMVIEW=y`）。这里补充两个容易踩的坑：
+
+1. **模块依赖**：`SEGGER_SYSTEMVIEW` 依赖 Percepio 模块（`ZEPHYR_PERCEPIO_MODULE`）。zephyr 默认 `west.yml` 清单包含该模块（落位 `modules/debug/percepio`）；若工作区按 group 裁剪过 manifest，先确认它还在（`west list | grep percepio`），缺失则 `west update` 补齐
+2. **它自带 THREAD_MONITOR**：`SEGGER_SYSTEMVIEW` 会 select `THREAD_MONITOR`，开启后即使不开 `THREAD_RUNTIME_STATS` 也收集了线程级监控数据——tracing 与运行时统计叠加时的数据口径要分清
+
+SystemView 时间线上看什么：
+
+| 现象 | 时间线特征 | 指向 |
+|------|-----------|------|
+| 线程被高优先级抢占 | 目标线程的 running 段被切断 | 优先级分配问题（见 [内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)） |
+| ISR 频繁且时长不短 | 密集的 ISR 进出事件 | 中断风暴，下沉到 §8 |
+| 线程 ready 但迟迟不跑 | ready→running 之间的大空洞 | 同优先级时间片被占 / 调度锁 |
+| workqueue 长事务 | sysworkq 连续 running 无阻塞点 | work 里做了阻塞调用 |
+
+### 6.3 轻量替代：RAM 后端
+
+没有逻辑分析仪、不能接串口的现场（整机装壳测试），`CONFIG_TRACING_BACKEND_RAM=y` 把事件写进环形缓冲区，复现问题后用调试器或 shell 把缓冲区倒出来离线解析——牺牲实时性换现场可行性。
+
+## 7. 中断延迟实测方法论
+
+### 7.1 要测哪几段
+
+"中断延迟"不是一个数，是一条链：
+
+```text
+外部事件发生 → [A] ISR 开始执行 → [B] ISR 处理 → [C] 提交 work/线程 →
+[D] 调度器切换 → [E] work 开始执行 → [F] work 完成动作
+```
+
+| 段 | 典型量级 | 测量手段 |
+|----|----------|----------|
+| A（硬件→ISR 入口） | μs 级 | GPIO 翻转 + 逻辑分析仪（唯一可信手段） |
+| B（ISR 内处理） | μs 级 | timing 子系统 |
+| C→D→E（提交→调度→运行） | 10μs–1ms 级 | 埋点 + `kernel threads` 对照 |
+| E→F（work 内处理） | 依实现 | timing 子系统 |
+
+### 7.2 GPIO 翻转基准法（段 A）
+
+```c
+/* 事件源引脚触发时硬件先翻转参考 GPIO（外设/另一个 GPIO 均可），
+   ISR 第一行再翻转同一 GPIO——逻辑分析仪上两个沿的时间差即段 A。 */
+void my_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+{
+	gpio_pin_set_dt(&dbg_pin, 1);   /* 第一行，勿放在取数据之后 */
+	/* ... ISR 处理 ... */
+	gpio_pin_set_dt(&dbg_pin, 0);
+}
+```
+
+逻辑分析仪两通道：一接事件源信号，一接调试 GPIO。**重复采集记录分布**（max/p99），单次采样无意义。
+
+### 7.3 提交到运行的链路测量（段 C→E）
+
+```c
+void my_isr(...)
+{
+	uint32_t t0 = k_cycle_get_32();
+	k_work_submit_to_queue(&my_wq, &my_work);
+	isr_submit_cycles = k_cycle_get_32() - t0;   /* 段 C，存到全局 */
+	k_poll_signal_raise(&meas_sig, 0);           /* 触发测量线程 */
+}
+
+static void meas_thread_fn(void)      /* 专职测量线程，高优先级 */
+{
+	for (;;) {
+		k_poll_signal_wait(&meas_sig, 0, NULL);
+		uint32_t t_end = k_cycle_get_32();
+		/* t_end - isr_t0 近似段 C+D+E（含测量线程自身的调度延迟） */
+		LOG_INF("submit=%u cycles, e2e=%u cycles",
+			isr_submit_cycles, t_end - isr_t0);
+	}
+}
+```
+
+:::warning[测量线程会扰动被测系统]
+专职测量线程要高优先级、小栈、只做差值计算与 LOG。它测到的是"在当前负载下的表现"——因此**必须在真实负载场景下测**（见 §1.2）。tracing 时间线能替代这种手工测量，且不带测量线程扰动，复杂链路优先用 §6。
+:::
+
+## 8. EC 实战：预算表与回归门禁
+
+### 8.1 落地流程
+
+1. **建预算表**：§1.1 的表格填上本产品数值，放进 bring-up 清单
+2. **布测量点**：每个预算路径选一个 §2–§7 的测量手段，低成本优先
+3. **标称验收**：bring-up 时按清单测量记录，进 release note
+4. **回归门禁**：版本发布的回归轮里重测全部测量点，max 超 ±20% 即触发排查——实时性回归和 [测试框架](/docs/development/debug/06_test_framework) 的功能回归同等重要
+5. **量产裁剪**：门禁通过后裁掉诊断配置（analyzer/init stacks），保留零开销的 GPIO 翻转点
+
+### 8.2 案例推演
+
+「风扇响应延迟」按链路归因：
+
+1. 预算表：热事件→PWM 调整 < 2s
+2. `kernel threads`：`sysworkq` 占比正常 → 排除 workqueue 阻塞
+3. thermal 线程周期自检（§2.2）：采样周期无漂移 → 排除调度饥饿
+4. timing 埋点 i2c 温度读取：**310ms**，超预算 → 根因是 i2c 重试无超时
+5. 修复后 tracing 确认全链路 480ms，门禁写入
+
+每一步都落到一个工具，没有一步靠猜。
+
+## 9. 实操任务
+
+`native_sim` 上免硬件完成：
+
+```bash
+# 1. 线程运行时统计
+west build -b native_sim samples/hello_world -p -- -DCONFIG_THREAD_RUNTIME_STATS=y \
+  -DCONFIG_KERNEL_SHELL=y -DCONFIG_INIT_STACKS=y
+west build -t run
+# 交互串口输入：kernel threads   ← 观察每线程执行时间与栈使用
+
+# 2. thread analyzer 自动巡检
+west build -b native_sim samples/hello_world -p -- \
+  -DCONFIG_THREAD_ANALYZER=y -DCONFIG_THREAD_ANALYZER_USE_PRINTK=y \
+  -DCONFIG_THREAD_ANALYZER_AUTO=y -DCONFIG_THREAD_ANALYZER_ISR_STACK_USAGE=y
+west build -t run
+# 观察自动输出的每线程栈统计
+
+# 3. tracing POSIX 后端（native_sim 把 CTF 事件写文件）
+west build -b native_sim samples/hello_world -p -- \
+  -DCONFIG_TRACING=y -DCONFIG_TRACING_CTF=y -DCONFIG_TRACING_BACKEND_POSIX=y
+west build -t run
+# 检查生成的 tracing 输出文件存在且随运行增长
+```
+
+**进阶**：在一块真实 EC 板上完成 §7.2 的 GPIO 翻转 + 逻辑分析仪采集，记录 100 次中断的段 A 分布。
+
+## 10. 学习总结
+
+- 先建**延迟预算表**（每路径判据 + 测量点），测量围绕预算展开；实时性看 worst-case 分布不看平均
+- 时间源两把尺：`k_uptime_*` 毫秒级（注意 32 位回绕）、`k_cycle_get_*` 微秒级（注意短回绕周期）；成规模测量用 **timing 子系统**（`CONFIG_TIMING_FUNCTIONS`，`timing_cycles_to_ns` 带换算）
+- **`CONFIG_THREAD_RUNTIME_STATS` + `kernel threads` shell** 免埋点回答"CPU 忙在哪"；idle 占比是功耗侧的对照指标
+- **thread analyzer** 持续监控全线程栈峰值，与静态测量（`k_thread_stack_space_get`）互补；诊断配置，量产前裁掉
+- **tracing 子系统**（`TRACING` + `TRACING_CTF` + backend）与 **SystemView**（依赖 Percepio 模块）给出全事件时间线，擅长调度/抢占/ISR 频度分析；RAM 后端适合无串口现场
+- 中断延迟按 **A→F 六段链路**分段归因：段 A 只信 GPIO 翻转 + 逻辑分析仪，链路段优先用 tracing 而非手工埋点
+
+## 11. 参考资源
+
+- [timing.h API（v3.7.0 doxygen）](https://docs.zephyrproject.org/3.7.0/doxygen/html/timing_8h.html) —— 本章 §3 全部函数签名来源
+- [thread_analyzer.h API（v3.7.0 doxygen）](https://docs.zephyrproject.org/3.7.0/doxygen/html/thread__analyzer_8h.html)
+- [tracing Kconfig（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/subsys/tracing/Kconfig) —— §6 符号清单来源
+- [kernel_service shell 实现（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/subsys/shell/modules/kernel_service.c) —— `kernel threads` 的运行时统计输出
+- 内部衔接：[系统优化](/docs/zephyr-kernel/10_optimization)（SystemView 快速上手与 Kconfig 裁剪）、[对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)（栈静态测量）、[内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)（调度与 workqueue 语义）、[功耗优化](/docs/best-practices/02_power_optimization)（电流侧验收）、[测试框架](/docs/development/debug/06_test_framework)（回归门禁落位）
