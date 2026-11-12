@@ -103,6 +103,7 @@ content/docs/meta.json        → root: [getting-started, development, zephyr-ke
 
 ## 边界
 
+- **禁止**: 在 MDX 中使用裸 `<a href="/docs/...">` 做站内跳转——MDX 会把裸 `<a>` 编译为原生 HTML 标签，**绕过 basePath**，部署后点卡片会跳到 `github.io/docs/...` 得到 404。所有卡片/自定义锚点必须用 `<Link href="...">`（已在 `mdx-components.tsx` 注册为 fumadocs 的 basePath-aware Link）
 - **禁止**: 在 MDX 中使用 `class=`（React 用 `className=`）
 - **禁止**: 相对链接（必须 `/docs/...` 绝对路径）
 - **禁止**: 内容中使用 `# ` 标题（h1 由模板提供，内容从 `## ` 起步）
