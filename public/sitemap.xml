@@ -222,6 +222,10 @@
     <lastmod>2026-11-12</lastmod>
   </url>
   <url>
+    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/08_version_upgrade/</loc>
+    <lastmod>2026-11-12</lastmod>
+  </url>
+  <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/</loc>
     <lastmod>2026-11-12</lastmod>
   </url>
@@ -378,7 +382,15 @@
     <lastmod>2026-11-12</lastmod>
   </url>
   <url>
-    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/16_community_contribution/</loc>
+    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/16_linker_and_memory_layout/</loc>
+    <lastmod>2026-11-12</lastmod>
+  </url>
+  <url>
+    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/17_measurement_and_tracing/</loc>
+    <lastmod>2026-11-12</lastmod>
+  </url>
+  <url>
+    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/18_community_contribution/</loc>
     <lastmod>2026-11-12</lastmod>
   </url>
   <url>

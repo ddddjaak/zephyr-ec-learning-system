@@ -243,6 +243,10 @@ export const staticSlugs: string[][] = [
     "07_bringup_checklist"
   ],
   [
+    "porting",
+    "08_version_upgrade"
+  ],
+  [
     "porting"
   ],
   [
@@ -397,7 +401,15 @@ export const staticSlugs: string[][] = [
   ],
   [
     "zephyr-kernel",
-    "16_community_contribution"
+    "16_linker_and_memory_layout"
+  ],
+  [
+    "zephyr-kernel",
+    "17_measurement_and_tracing"
+  ],
+  [
+    "zephyr-kernel",
+    "18_community_contribution"
   ],
   [
     "zephyr-kernel"
