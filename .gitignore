@@ -39,3 +39,6 @@ next-env.d.ts
 
 # 本地静态预览 junction（指向 out/ 的临时目录）
 serve_root/
+
+# tsc 增量缓存
+tsconfig.tsbuildinfo

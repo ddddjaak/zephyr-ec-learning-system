@@ -1,9 +1,5 @@
-'use client';
-
-import { useRef } from 'react';
 import Link from 'next/link';
 import { ChevronRight, BookOpen, Braces, Terminal, Blocks } from 'lucide-react';
-import { gsap, useGSAP } from '@/lib/gsap';
 import { HeroBackground } from './hero-background';
 import { TerminalWindow } from '@/components/terminal-window';
 
@@ -15,73 +11,42 @@ const quickLinks = [
 ];
 
 const buildLines = [
-  {
-    tone: 'cmd' as const,
-    text: '$ west build -b csce250x_evb app/ -p --build-dir build/ec_fw',
-  },
+  { tone: 'cmd' as const, text: '$ west build -b csce250x_evb app/ -p --build-dir build/ec_fw' },
   { tone: 'dim' as const, text: '-- west build: generating a build system' },
   { tone: 'dim' as const, text: '-- west build: building application' },
   { tone: 'out' as const, text: '[100%] Built target zephyr_final' },
 ];
 
+/**
+ * Hero — 断言式定位 + 具体组合 + 真实构建输出
+ *
+ * 入场动画用 CSS（.hero-rise，见 global.css）：首屏内容不依赖
+ * JS/hydration，慢网络或脚本失败时依然完整可见。
+ */
 export function HeroSection() {
-  const eyebrowRef = useRef<HTMLParagraphElement>(null);
-  const headingRef = useRef<HTMLHeadingElement>(null);
-  const subtitleRef = useRef<HTMLParagraphElement>(null);
-  const ctaRef = useRef<HTMLDivElement>(null);
-  const pillsRef = useRef<HTMLDivElement>(null);
-  const proofRef = useRef<HTMLDivElement>(null);
-
-  useGSAP(() => {
-    const textEls = [headingRef.current, subtitleRef.current, ctaRef.current, eyebrowRef.current];
-    gsap.set(textEls, { opacity: 0, y: 24, visibility: 'visible' });
-    if (pillsRef.current) {
-      const children = Array.from(pillsRef.current.children) as HTMLElement[];
-      gsap.set(children, { opacity: 0, y: 16, visibility: 'visible' });
-    }
-    gsap.set(proofRef.current, { opacity: 0, y: 32, visibility: 'visible' });
-
-    const tl = gsap.timeline({ defaults: { ease: 'power3.out' } });
-
-    tl.to(eyebrowRef.current, { opacity: 1, y: 0, duration: 0.6 }, 0.15)
-      .to(headingRef.current, { opacity: 1, y: 0, duration: 1.2 }, 0.35)
-      .to(subtitleRef.current, { opacity: 1, y: 0, duration: 0.9 }, 0.7)
-      .to(ctaRef.current, { opacity: 1, y: 0, duration: 0.7 }, 0.95);
-
-    if (pillsRef.current) {
-      const children = Array.from(pillsRef.current.children) as HTMLElement[];
-      tl.to(children, {
-        opacity: 1, y: 0,
-        duration: 0.5, stagger: 0.06, ease: 'power3.out',
-      }, 1.15);
-    }
-
-    tl.to(proofRef.current, { opacity: 1, y: 0, duration: 0.9 }, 1.35);
-  }, []);
-
   return (
     <section className="relative flex min-h-[92vh] w-full flex-col items-center justify-center overflow-hidden bg-white dark:bg-[#0a0a0b] sm:min-h-[90vh]">
       <HeroBackground />
 
       <div className="relative z-10 mx-auto flex w-full max-w-4xl flex-col items-center px-6 py-16 text-center sm:px-8 sm:py-20">
         <p
-          ref={eyebrowRef}
-          className="mb-6 font-mono text-xs font-medium uppercase tracking-[0.2em] text-neutral-400 dark:text-neutral-500"
+          className="hero-rise mb-6 font-mono text-xs font-medium uppercase tracking-[0.2em] text-neutral-400 dark:text-neutral-500"
+          style={{ animationDelay: '0ms' }}
         >
           Chipsea Zephyr EC · Zephyr 3.7 LTS
         </p>
 
         <h1
-          ref={headingRef}
-          className="text-balance font-sans text-4xl font-extrabold leading-[1.08] tracking-[-0.04em] text-neutral-900 dark:text-white sm:text-5xl md:text-6xl lg:text-7xl"
+          className="hero-rise text-balance font-sans text-4xl font-extrabold leading-[1.08] tracking-[-0.04em] text-neutral-900 dark:text-white sm:text-5xl md:text-6xl lg:text-7xl"
+          style={{ animationDelay: '120ms' }}
         >
           <span className="block sm:inline">换芯片，</span>
           <span className="block sm:inline">只改 Device Tree。</span>
         </h1>
 
         <p
-          ref={subtitleRef}
-          className="mt-6 max-w-2xl text-balance text-base leading-relaxed text-neutral-500 dark:text-neutral-400 sm:text-lg"
+          className="hero-rise mt-6 max-w-2xl text-balance text-base leading-relaxed text-neutral-500 dark:text-neutral-400 sm:text-lg"
+          style={{ animationDelay: '260ms' }}
         >
           键盘扫描用 <code className="font-mono text-neutral-700 dark:text-neutral-300">kscan</code>、
           电池充电用 <code className="font-mono text-neutral-700 dark:text-neutral-300">charger</code>、
@@ -93,7 +58,10 @@ export function HeroSection() {
         </p>
 
         {/* CTA */}
-        <div ref={ctaRef} className="mt-8 flex flex-wrap items-center justify-center gap-4">
+        <div
+          className="hero-rise mt-8 flex flex-wrap items-center justify-center gap-4"
+          style={{ animationDelay: '400ms' }}
+        >
           <Link
             href="/docs/getting-started"
             className="inline-flex h-12 items-center gap-2 rounded-full bg-neutral-900 px-8 text-sm font-semibold text-white transition-all duration-300 hover:bg-black hover:scale-[1.03] active:scale-[0.98] dark:bg-white dark:text-black dark:hover:bg-neutral-200"
@@ -110,12 +78,16 @@ export function HeroSection() {
         </div>
 
         {/* 快速导航 */}
-        <div ref={pillsRef} className="mt-8 flex flex-wrap items-center justify-center gap-3">
-          {quickLinks.map(({ icon: Icon, label, href }) => (
+        <div
+          className="hero-rise mt-8 flex flex-wrap items-center justify-center gap-3"
+          style={{ animationDelay: '520ms' }}
+        >
+          {quickLinks.map(({ icon: Icon, label, href }, i) => (
             <Link
               key={label}
               href={href}
               className="inline-flex items-center gap-2 rounded-full border border-neutral-200 bg-neutral-100/80 px-4 py-2 text-sm font-medium text-neutral-600 backdrop-blur-sm transition-all duration-300 hover:border-neutral-300 hover:bg-neutral-200 hover:text-neutral-900 dark:border-neutral-800 dark:bg-neutral-900/50 dark:text-neutral-400 dark:hover:border-neutral-600 dark:hover:bg-neutral-800/80 dark:hover:text-white"
+              style={{ animationDelay: `${520 + (i + 1) * 60}ms` }}
             >
               <Icon className="h-4 w-4" />
               {label}
@@ -124,11 +96,11 @@ export function HeroSection() {
         </div>
 
         {/* 构建实景 — 工程师的第一眼信任 */}
-        <div ref={proofRef} className="mt-14 w-full max-w-xl text-left">
-          <TerminalWindow
-            title="ecfw-zephyr — west build 示例输出"
-            lines={buildLines}
-          />
+        <div
+          className="hero-rise mt-14 w-full max-w-xl text-left"
+          style={{ animationDelay: '700ms' }}
+        >
+          <TerminalWindow title="ecfw-zephyr — west build 示例输出" lines={buildLines} />
         </div>
       </div>
     </section>

@@ -1216,5 +1216,31 @@ kbd {
 }
 
 /* ============================================================
+   首页 Hero 入场 — CSS 原生动画
+   不依赖 JS/hydration：首屏内容在 HTML 到达时即可见，
+   慢网络或 JS 失败时不会出现"空白首屏"。
+   ============================================================ */
+@keyframes hero-rise {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 24px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.hero-rise {
+  animation: hero-rise 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-rise {
+    animation: none;
+  }
+}
+
+/* ============================================================
    End of custom styles
    ============================================================ */
