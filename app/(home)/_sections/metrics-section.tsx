@@ -1,15 +1,17 @@
 'use client';
 
+import Link from 'next/link';
 import { useRef } from 'react';
 import { gsap, ScrollTrigger, useGSAP } from '@/lib/gsap';
 import { useScrollReveal } from '@/hooks/use-scroll-reveal';
 import { DotPattern } from '@/components/dot-pattern';
 
+// href = 该数字的验证出处：点进去能找到判据与过程
 const metrics = [
-  { value: 3, label: '天出原型', desc: '硬件就绪即可上固件，数周变 3 天' },
-  { value: 1, label: '套代码', desc: '笔记本、平板、工控机共享同一驱动模型' },
-  { value: 24, label: 'h 压力测试', desc: '全部驱动通过不间断压力验证，零故障' },
-  { value: 0, label: '锁定风险', desc: 'Apache 2.0 开源，不受厂商绑定' },
+  { value: 3, label: '天出原型', desc: '硬件就绪即可上固件，数周变 3 天', href: '/docs/porting/01_porting_guide' },
+  { value: 1, label: '套代码', desc: '笔记本、平板、工控机共享同一驱动模型', href: '/docs/development/architecture/01_layered_architecture' },
+  { value: 24, label: 'h 压力测试', desc: '全部驱动通过不间断压力验证，零故障', href: '/docs/development/debug/06_test_framework' },
+  { value: 0, label: '锁定风险', desc: 'Apache 2.0 开源，不受厂商绑定', href: '/docs/zephyr-kernel/01_introduction' },
 ];
 
 export function MetricsSection() {
@@ -24,8 +26,8 @@ export function MetricsSection() {
         </h2>
 
         <div ref={scopeRef} className="mt-14 grid grid-cols-2 gap-x-6 gap-y-12 sm:grid-cols-4 sm:gap-8">
-          {metrics.map(({ value, label, desc }, i) => (
-            <MetricItem key={label} value={value} label={label} desc={desc} index={i} />
+          {metrics.map(({ value, label, desc, href }, i) => (
+            <MetricItem key={label} value={value} label={label} desc={desc} href={href} index={i} />
           ))}
         </div>
       </div>
@@ -34,8 +36,8 @@ export function MetricsSection() {
 }
 
 function MetricItem({
-  value, label, desc, index,
-}: { value: number; label: string; desc: string; index: number }) {
+  value, label, desc, href, index,
+}: { value: number; label: string; desc: string; href: string; index: number }) {
   const counterRef = useRef<HTMLSpanElement>(null);
   const hasCounted = useRef(false);
 
@@ -61,7 +63,10 @@ function MetricItem({
   }, []);
 
   return (
-    <div className="flex flex-col items-center gap-2 text-center sm:items-start sm:text-left">
+    <Link
+      href={href}
+      className="group flex flex-col items-center gap-2 text-center sm:items-start sm:text-left"
+    >
       <div className="flex items-baseline gap-0.5">
         <span
           ref={counterRef}
@@ -70,13 +75,16 @@ function MetricItem({
         >
           {value}
         </span>
-        <span className="font-mono text-lg font-bold text-neutral-400 dark:text-neutral-500 sm:text-xl" style={{ lineHeight: 1 }}>
+        <span
+          className="font-mono text-lg font-bold text-neutral-400 transition-colors group-hover:text-neutral-600 dark:text-neutral-500 dark:group-hover:text-neutral-300 sm:text-xl"
+          style={{ lineHeight: 1 }}
+        >
           {label}
         </span>
       </div>
       <p className="text-sm leading-relaxed text-neutral-500 dark:text-neutral-400">
         {desc}
       </p>
-    </div>
+    </Link>
   );
 }
