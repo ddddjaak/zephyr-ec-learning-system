@@ -84,6 +84,19 @@ Zephyr RTOS 系统学习资料：从内核机制、配置系统、驱动模型�
   <span className="hub-card-arrow">→</span>
 </Link>
 
+<Link className="hub-card" href="/docs/zephyr-kernel/18_data_passing">
+  <div className="hub-card-icon">🧺</div>
+  <strong>数据与传感</strong>
+  <p>数据传递原语（ring_buf / condvar / pipe / mbox / atomic）、输入子系统与 kscan、传感器子系统统一 API。</p>
+  <div className="hub-card-sub">
+    <span style={{"background":"rgba(34,197,94,0.1)","color":"#22c55e"}}>ring_buf</span>
+    <span style={{"background":"rgba(34,197,94,0.1)","color":"#22c55e"}}>kscan</span>
+    <span style={{"background":"rgba(34,197,94,0.1)","color":"#22c55e"}}>sensor</span>
+    <span style={{"background":"rgba(34,197,94,0.1)","color":"#22c55e"}}>atomic</span>
+  </div>
+  <span className="hub-card-arrow">→</span>
+</Link>
+
 </div>
 
 ## 如何使用
@@ -94,5 +107,6 @@ Zephyr RTOS 系统学习资料：从内核机制、配置系统、驱动模型�
 | 深入学习内核 | [内核核心机制](/docs/zephyr-kernel/05_kernel_mechanisms) → [Kconfig 与设备树](/docs/zephyr-kernel/06_config_system) → [驱动开发](/docs/zephyr-kernel/07_driver_model) |
 | 系统设计决策 | [子系统](/docs/zephyr-kernel/08_subsystems) + [系统架构设计](/docs/zephyr-kernel/09_architecture_design) |
 | 性能与安全 | [系统优化](/docs/zephyr-kernel/10_optimization) + [安全与合规](/docs/zephyr-kernel/11_security) |
-| 进阶专题 | [异步与消息总线](/docs/zephyr-kernel/13_async_messaging) → [用户态与权限](/docs/zephyr-kernel/14_userspace) → [对象生命周期与内存池](/docs/zephyr-kernel/15_object_lifecycle) |
-| 源码级研究 | [内核源码分析](/docs/zephyr-kernel/12_kernel_source)，想参与贡献看 [社区贡献指南](/docs/zephyr-kernel/18_community_contribution) |
+| 进阶专题 | [异步与消息总线](/docs/zephyr-kernel/13_async_messaging) → [用户态与权限](/docs/zephyr-kernel/14_userspace) → [对象生命周期与内存池](/docs/zephyr-kernel/15_object_lifecycle) → [链接与内存布局](/docs/zephyr-kernel/16_linker_and_memory_layout) → [实时性测量与追踪](/docs/zephyr-kernel/17_measurement_and_tracing) |
+| 数据与传感 | [数据传递原语](/docs/zephyr-kernel/18_data_passing)（ring_buf / condvar / pipe / mbox）→ [输入子系统与 kscan](/docs/zephyr-kernel/19_input_subsystem) → [传感器子系统](/docs/zephyr-kernel/20_sensor_subsystem) |
+| 源码级研究 | [内核源码分析](/docs/zephyr-kernel/12_kernel_source)，想参与贡献看 [社区贡献指南](/docs/zephyr-kernel/21_community_contribution) |

@@ -1,0 +1,277 @@
+---
+title: "传感器子系统"
+description: "Zephyr sensor 子系统统一 API——三步读取法、通道模型、触发模型、属性设置、sensor shell 调试与 EC 场景选型"
+---
+
+:::note[阅读提示]
+本章节涵盖 Zephyr RTOS 的通用技术概念。芯海 EC 平台的具体应用请参考 **开发指南** 与 **移植指南**。
+:::
+
+:::info[学习目标]
+通过本章学习，你将掌握：
+
+- sensor 子系统的统一数据面：`sample_fetch` → `channel_get` → `sensor_value` 解析三步法
+- `sensor_value` 的定点精度模型（`val1 + val2/10⁶`）与四个换算函数的正确用法
+- 通道模型：`SENSOR_CHAN_*` 通道族、三轴聚合通道与 `SENSOR_CHAN_ALL`
+- 触发模型：`sensor_trigger` 结构、`sensor_trigger_set`、常见触发类型与轮询/触发选型
+- 用 `sensor_attr_set` 配置 ODR / 量程等传感器属性
+- 用 `CONFIG_SENSOR_SHELL` 在板上直接调试传感器
+:::
+
+## 概述
+
+一台笔记本 EC 可能同时挂着加速度计（姿态/跌落保护）、环境光传感器（背光调节）、温度传感器（热管理）、陀螺仪。这些传感器的驱动各不相同，但它们暴露给应用的数据面是**同一个**——这就是 Zephyr sensor 子系统的价值：应用只认识 `sensor_sample_fetch` / `sensor_channel_get` 这组 API，底下换传感器型号、换芯片平台，应用代码不动。
+
+这正好支撑本手册的核心叙事：[驱动模型](/docs/zephyr-kernel/07_driver_model) 讲"驱动怎么实现"，本章讲"应用怎么用"。两者合起来才是完整的传感器链路。
+
+## 1. 三步读取法
+
+sensor 子系统的同步读取固定为三步（API 签名按 v3.7.0 `include/zephyr/drivers/sensor.h` 核实）：
+
+```c
+#include <zephyr/drivers/sensor.h>
+#include <zephyr/logging/log.h>
+LOG_MODULE_REGISTER(sensor_demo);
+
+static const struct device *const accel =
+	DEVICE_DT_GET(DT_NODELABEL(accel0));
+
+int read_acceleration(void)
+{
+	int rc;
+
+	/* 第 1 步：取样（把传感器寄存器数据一次性搬进驱动内存） */
+	rc = sensor_sample_fetch(accel);
+	if (rc) {
+		return rc;
+	}
+
+	/* 第 2 步：从驱动内存取通道值（不产生总线通信） */
+	struct sensor_value accel_xyz[3];
+	rc = sensor_channel_get(accel, SENSOR_CHAN_ACCEL_XYZ, accel_xyz);
+	if (rc) {
+		return rc;
+	}
+
+	/* 第 3 步：换算成物理量 */
+	LOG_INF("accel: %.2f %.2f %.2f m/s^2",
+		sensor_value_to_double(&accel_xyz[0]),
+		sensor_value_to_double(&accel_xyz[1]),
+		sensor_value_to_double(&accel_xyz[2]));
+	return 0;
+}
+```
+
+三条纪律：
+
+1. **`fetch` 是总线通信（贵），`channel_get` 是内存拷贝（几乎免费）**。同一次 fetch 可以取任意多个通道；不要把 `channel_get` 之前重复 fetch
+2. **`channel_get` 的数组长度取决于通道**——三轴通道（`_XYZ`）要传 3 元素数组，标量通道传 1 元素
+3. **fetch 在线程里做**。中断/触发场景的 handler 上下文见 §4
+
+## 2. sensor_value：定点精度模型
+
+传感器数值不是 `float`，而是定点结构：
+
+```c
+struct sensor_value {
+	int32_t val1;   /* 整数部分 */
+	int32_t val2;   /* 小数部分 × 10⁶ */
+};
+```
+
+即实际值 = `val1 + val2 / 1000000`。这样设计的原因：无 FPU 的 Cortex-M 上避免浮点、跨精度换算零损耗。换算函数（v3.7.0 核实）：
+
+| 函数 | 返回 | 适用 |
+|------|------|------|
+| `sensor_value_to_double(&v)` | `double` | 日志显示、人读 |
+| `sensor_value_to_float(&v)` | `float` | 算法中间量 |
+| `sensor_value_to_milli(&v)` | `int64_t`，值×1000 | **推荐**——毫单位整数比较，避免浮点 |
+| `sensor_value_to_micro(&v)` | `int64_t`，值×10⁶ | 高精度比较 |
+
+两个自带常量：`SENSOR_G`（9.80665，重力加速度，单位与 m/s² 通道一致）与 `SENSOR_PI`。做"超过多少 g 判翻盖"这类比较，用 `sensor_value_to_micro()` 与 `SENSOR_G` 比整数，不要比浮点：
+
+```c
+/* |Z 轴| > 1.5g 判跌落 */
+if (llabs(sensor_value_to_micro(&accel_z)) > 3 * (SENSOR_G / 2)) {
+	/* 跌落处理 */
+}
+```
+
+:::warning[注意]
+`sensor_value_to_double`/`to_float` 在无 FPU 的目标上会拉入软浮点库——量产固件里只用于日志路径，算法路径一律走 `_milli`/`_micro` 整数比较。
+:::
+
+## 3. 通道模型
+
+### 3.1 常用通道
+
+| 通道 | 含义 | EC 场景 |
+|------|------|---------|
+| `SENSOR_CHAN_AMBIENT_TEMP` | 环境温度 | 热管理辅助采样 |
+| `SENSOR_CHAN_DIE_TEMP` | 传感器芯片自温 | 温度补偿 |
+| `SENSOR_CHAN_ACCEL_X/Y/Z` | 加速度单轴 | 姿态检测 |
+| `SENSOR_CHAN_ACCEL_XYZ` | 三轴聚合（一次取 3 个） | 翻盖/跌落检测 |
+| `SENSOR_CHAN_GYRO_X/Y/Z/XYZ` | 陀螺仪 | 高端产品姿态 |
+| `SENSOR_CHAN_LIGHT` / `_IR` / `_BLUE` | 环境光/红外/蓝光通道 | 背光调节 |
+| `SENSOR_CHAN_CO2` / `_VOC` / `_GAS_RES` | 空气质量 | 平板/工控机场景 |
+| `SENSOR_CHAN_CURRENT` / `_VOLTAGE` | 电流/电压 | 电池计辅助 |
+| `SENSOR_CHAN_ALL` | 全部通道 | 全量拉取 |
+
+通道是**枚举**而非字符串，编译期确定；驱动不支持某通道时 `channel_get` 返回 `-ENOTSUP`。
+
+### 3.2 聚合通道的数组语义
+
+`SENSOR_CHAN_ACCEL_XYZ` 一次返回 3 个 `sensor_value`（X/Y/Z 顺序）。写成：
+
+```c
+struct sensor_value xyz[3];
+sensor_channel_get(dev, SENSOR_CHAN_ACCEL_XYZ, xyz);   /* xyz[0]=X, xyz[1]=Y, xyz[2]=Z */
+```
+
+单轴通道（`_X`/`_Y`/`_Z`）各返回 1 个值。两种读法等价，聚合通道省两次 `channel_get`。
+
+## 4. 触发模型：不用轮询传感器
+
+### 4.1 触发结构与时序
+
+```c
+struct sensor_trigger {
+	enum sensor_trigger_type type;   /* 触发类型 */
+	enum sensor_channel chan;        /* 触发所在的通道 */
+};
+
+typedef void (*sensor_trigger_handler_t)(const struct device *dev,
+					 const struct sensor_trigger *trigger);
+```
+
+注册触发（v3.7.0 签名核实：**trig 在前、handler 在后**）：
+
+```c
+static void data_ready_handler(const struct device *dev,
+			       const struct sensor_trigger *trig)
+{
+	/* 传感器中断上下文：
+	   这里做轻量的 fetch + channel_get + 唤醒处理线程 */
+	struct sensor_value xyz[3];
+	sensor_sample_fetch(dev);
+	sensor_channel_get(dev, SENSOR_CHAN_ACCEL_XYZ, xyz);
+	k_msgq_put(&accel_msgq, xyz, K_NO_WAIT);   /* 交给处理线程 */
+}
+
+/* 注册：DATA_READY 触发挂到 X/Y/Z 聚合通道 */
+static struct sensor_trigger dr_trigger = {
+	.type = SENSOR_TRIG_DATA_READY,
+	.chan = SENSOR_CHAN_ACCEL_XYZ,
+};
+
+void enable_accel_events(void)
+{
+	sensor_trigger_set(accel, &dr_trigger, data_ready_handler);
+}
+```
+
+### 4.2 v3.7.0 触发类型速览
+
+| 触发 | 场景 |
+|------|------|
+| `SENSOR_TRIG_DATA_READY` | 新数据就绪（最常用） |
+| `SENSOR_TRIG_FIFO_WATERMARK` / `_FIFO_FULL` | 批量采集：攒一批再取，降低中断频率 |
+| `SENSOR_TRIG_TAP` / `_DOUBLE_TAP` | 敲击检测（翻盖/折叠形态切换） |
+| `SENSOR_TRIG_MOTION` / `_FREEFALL` / `_DELTA` / `_THRESHOLD` | 运动唤醒/跌落/越阈 |
+| `SENSOR_TRIG_NEAR_FAR` | 接近/远离 |
+| `SENSOR_TRIG_TIMER` | 传感器内部定时器驱动采样 |
+
+支持的触发集合由**驱动**决定——`sensor_trigger_set` 返回 `-ENOTSUP` 表示该型号不支持，应用要能降级为轮询。
+
+### 4.3 轮询 vs 触发选型
+
+| 场景 | 建议 |
+|------|------|
+| 低频后台采样（热管理 1–10 Hz） | 轮询 + [delayable work / k_timer](/docs/development/appdev/07_system_services)，简单可靠 |
+| 事件型检测（敲击、跌落、接近） | 触发——事件本身就是传感器的中断输出 |
+| 高频批量采集（运动记录） | FIFO watermark 触发，一次搬一批 |
+| 睡眠期间仍需采样 | 触发 + 传感器自带的 FIFO/自采样能力，让 MCU 睡得更久（对照[功耗优化](/docs/best-practices/02_power_optimization)） |
+
+## 5. 属性设置：sensor_attr_set
+
+采样率、量程这类传感器参数走属性接口：
+
+```c
+int sensor_attr_set(const struct device *dev,
+		    enum sensor_channel chan,
+		    enum sensor_attribute attr,
+		    const struct sensor_value *val);
+```
+
+```c
+/* 例：把加速度计量程设为 ±4g（具体属性枚举以驱动支持为准） */
+struct sensor_value fs = { .val1 = 4 };
+int rc = sensor_attr_set(accel, SENSOR_CHAN_ACCEL_XYZ,
+			 SENSOR_ATTR_FULL_SCALE, &fs);
+```
+
+属性枚举（`SENSOR_ATTR_*`）覆盖采样频率（`_SAMPLING_FREQ`）、量程（`_FULL_SCALE`）、上下限阈值（`_UPPER_THRESH`/`_LOWER_THRESH`）、偏移校准（`_OFFSET`）、校准开关（`_CALIB_*`）、省电模式（`_SLOPE_TH`/`_ALERT` 等）。与触发一样，**支持集合由驱动决定**，配置失败要降级而不是硬依赖。
+
+:::tip[配置时机]
+属性设置在 `sensor_trigger_set` 之前做——阈值类属性（如越阈触发）直接决定触发行为。EC 里这类配置通常固化在板级初始化序列，不要运行时反复改。
+:::
+
+## 6. 板上调试：sensor shell
+
+```ini
+# prj.conf
+CONFIG_SENSOR=y
+CONFIG_SENSOR_SHELL=y    # drivers/sensor/Kconfig，depends on SHELL
+CONFIG_SHELL=y           # shell 基础设施见应用开发 Shell 章
+```
+
+```text
+uart:~$ sensor list
+device name: accel0
+  ...（设备与支持通道）
+
+uart:~$ sensor get accel0 accel_xyz
+channel type=16(accel_xyz) index=0 value=-1.234567
+channel type=16(accel_xyz) index=1 value=0.123456
+channel type=16(accel_xyz) index=2 value=9.456789
+
+uart:~$ sensor info accel0    # 触发器与属性能力（驱动实现时输出）
+```
+
+三个命令覆盖"这板子挂了什么传感器、当前读数是多少、支持什么能力"——新板 bring-up 与量产抽检都用得上，配合 [Bring-up 清单](/docs/porting/07_bringup_checklist) 的传感器验收项。
+
+## 7. 实操任务
+
+sensor 子系统需要真实传感器硬件（`native_sim` 无 I2C 外设模型），以下在一块带传感器（加速度计或温度传感器均可）的目标板上完成：
+
+```bash
+# 1. 构建带 shell 的最小应用（按你的板号替换）
+west build -b <board> samples/sensor/... -p -- \
+  -DCONFIG_SENSOR_SHELL=y -DCONFIG_SHELL=y
+
+# 2. shell 验证三连
+sensor list
+sensor get <dev> die_temp      # 温度类传感器
+sensor info <dev>
+
+# 3. 写一个 §1 的三步读取线程，验证 fetch/get/换算
+# 4. 若驱动支持 DATA_READY：注册 §4 触发，观察 handler 是否按预期进入
+```
+
+**进阶**：把 [驱动模型](/docs/zephyr-kernel/07_driver_model) 的 SHT3x 双实例实战接到本页 API 上——两个实例就是两个 `DEVICE_DT_GET`，三步读取法完全不变，体会"驱动在 DT 层实例化、应用在子系统层消费"的分层。
+
+## 8. 学习总结
+
+- sensor 子系统的价值：**应用只见统一数据面**，换传感器型号/换平台不动应用代码——与"换芯片只改 Device Tree"是同一叙事
+- 三步读取法：`sample_fetch`（总线，贵）→ `channel_get`（内存，免费）→ 换算；一次 fetch 可取多通道
+- `sensor_value` 是定点数（`val1 + val2/10⁶`）：算法路径用 `to_milli`/`to_micro` 整数比较，`to_double` 只进日志
+- 触发模型把"传感器事件"直通应用 handler：`sensor_trigger_set(dev, trig, handler)`（trig 在前），常用 `DATA_READY`/`FIFO_WATERMARK`/`TAP`；支持集合由驱动决定，必须可降级轮询
+- 属性接口 `sensor_attr_set` 管 ODR/量程/阈值，在注册触发之前配置
+- `CONFIG_SENSOR_SHELL` 提供 list/get/info 三命令，是 bring-up 与抽检的默认工具
+
+## 9. 参考资源
+
+- [include/zephyr/drivers/sensor.h（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/include/zephyr/drivers/sensor.h) —— 本章全部 API 与枚举来源
+- [Sensor 子系统文档（v3.7.0）](https://docs.zephyrproject.org/3.7.0/hardware/peripherals/sensor/index.html)
+- [drivers/sensor/Kconfig（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/drivers/sensor/Kconfig) —— `SENSOR_SHELL` 等配置项
+- 内部衔接：[驱动模型](/docs/zephyr-kernel/07_driver_model)（驱动实现侧与 DT_INST 多实例）、[异步与消息总线](/docs/zephyr-kernel/13_async_messaging)（handler 到处理线程的传递可用 `k_msgq`/`k_poll`）、[应用开发·系统服务](/docs/development/appdev/07_system_services)（轮询采样的定时器落地）、[功耗优化](/docs/best-practices/02_power_optimization)（睡眠期间采样策略）

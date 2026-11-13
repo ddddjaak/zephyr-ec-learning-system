@@ -1,0 +1,187 @@
+---
+title: "Coredump 与后验分析"
+description: "Zephyr coredump 子系统——fatal 流程中的位置、两种后端（日志/flash 分区）、shell 取回命令、主机端 gdbserver 后验工作流与量产现场方案"
+---
+
+:::note[阅读提示]
+本页是 [日志与调试](/docs/development/debug/01_logging_and_debug) 与 [异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis) 的进阶篇：03 页讲"崩溃时屏幕上打印了什么"，本页讲"如何把崩溃现场完整带回来、在 PC 上用 gdb 离线复盘"。
+:::
+
+:::info[学习目标]
+通过本章学习，你将掌握：
+
+- coredump 在 Zephyr fatal 流程中的确切位置（`z_fatal_error()` 调用它，而不是默认 handler——常见误解）
+- 两种常用后端的选择：日志输出（`DEBUG_COREDUMP_BACKEND_LOGGING`，默认）与 flash 分区（`DEBUG_COREDUMP_BACKEND_FLASH_PARTITION`）
+- dump 范围档位：`DEBUG_COREDUMP_MEMORY_DUMP_MIN` 与默认的 `LINKER_RAM`
+- 按后端取回 dump 的 shell 命令（flash 后端是 `coredump print`，**没有** `coredump get`）
+- 主机端五步后验工作流：串口日志 → parser → gdbserver 脚本 → gdb `bt`/寄存器复盘
+- 量产设备上的现场方案：flash 后端存现场、下次开机取回
+:::
+
+## 概述
+
+EC 设备在客户手里崩溃，你拿不到调试器、复现不了现场——**后验诊断**（post-mortem）是唯一的排查通道。Zephyr 的 coredump 子系统把崩溃瞬间的寄存器与内存快照以结构化二进制流输出，主机端用 gdb 加载后**就像设备还停在崩溃点一样**：看寄存器、走调用栈、查变量值。
+
+与相邻页面的分工：[异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis) 讲 panic 时的栈回溯打印（人直接读）；本页讲结构化 dump（给 gdb 读，信息完整得多，且能离线分析）。量产固件建议两者都开——打印给现场工程师，dump 给研发复盘。
+
+## 1. coredump 在 fatal 流程中的位置
+
+这是最容易理解错的一环（对照 `kernel/fatal.c` 与 `subsys/debug/coredump/coredump_core.c`，v3.7.0 核实）：
+
+```text
+硬错误/内核异常
+   ↓
+z_fatal_error(reason, esf)                    ← kernel/fatal.c
+   ├─ 打印 ">>> ZEPHYR FATAL ERROR ..."
+   ├─ coredump(reason, esf, thread)           ← ★ coredump 在这里被调用
+   └─ k_sys_fatal_error_handler(reason, esf)  ← 用户 hook（weak 默认实现）
+                                                 默认实现只 LOG + halt，
+                                                 它【不调用】coredump
+```
+
+三条结论：
+
+1. **开启 `CONFIG_DEBUG_COREDUMP=y` 即自动生效**——调用点是内核的 `z_fatal_error()`，不需要在 fatal handler 里手工触发
+2. 默认 `k_sys_fatal_error_handler` 只做 `LOG_PANIC()` + 停机；如果你想"dump 之后自动重启"而不是挂死，才需要覆写 handler（返回后内核 abort 当前线程）
+3. 未开启 coredump 时，`include/zephyr/debug/coredump.h` 提供空实现桩——调用点无需条件编译
+
+:::warning[前提依赖]
+`CONFIG_DEBUG_COREDUMP` depends on `ARCH_SUPPORTS_COREDUMP`（架构层符号，主流 Cortex-M / x86 目标支持）。目标不支持时 Kconfig 会提示依赖不满足——换支持的目标（如 `qemu_x86`）做开发期验证。
+:::
+
+## 2. 配置与后端选择
+
+### 2.1 基础配置
+
+```ini
+# prj.conf（开发期/带诊断位的量产固件）
+CONFIG_DEBUG_COREDUMP=y                 # 主开关（menuconfig）
+CONFIG_DEBUG_COREDUMP_SHELL=y           # shell 取回命令（depends on SHELL）
+```
+
+### 2.2 后端（choice `DEBUG_COREDUMP_BACKEND`，v3.7.0 四选一）
+
+| 后端 | 依赖 | 输出去向 | 适用 |
+|------|------|----------|------|
+| `DEBUG_COREDUMP_BACKEND_LOGGING`（默认） | select LOG | 日志通道（串口），`#CD:` 前缀十六进制流 | 开发期、带串口抓取的场景 |
+| `DEBUG_COREDUMP_BACKEND_FLASH_PARTITION` | FLASH；select FLASH_MAP、STREAM_FLASH | DTS 固定分区 `coredump-partition` | **量产现场**——崩溃时写 flash，事后取回 |
+| `DEBUG_COREDUMP_BACKEND_INTEL_ADSP_MEM_WINDOW` | 特定 Intel ADSP DT 节点 | 共享内存窗口 slot | 仅该平台 |
+| `DEBUG_COREDUMP_BACKEND_OTHER` | — | 自定义（out of tree 实现 query/cmd 接口） | 特殊存储介质 |
+
+EC 量产方案 = **flash 分区后端**：崩溃瞬间把 dump 写进独立 flash 分区（不上传、不依赖现场有人接串口），设备重启后服务时用 shell 把 dump 读出来。DT 侧需要一个名为 `coredump-partition` 的固定分区（`FIXED_PARTITION_EXISTS(coredump_partition)` 检查）。
+
+### 2.3 dump 范围（choice `DEBUG_COREDUMP_MEMORY_DUMP`）
+
+| 档位 | 范围 | 体积 |
+|------|------|------|
+| `DEBUG_COREDUMP_MEMORY_DUMP_MIN` | 异常线程的 thread struct + 栈等最少内容（select THREAD_STACK_INFO） | 小 |
+| `DEBUG_COREDUMP_MEMORY_DUMP_LINKER_RAM`（默认） | `_image_ram_start` → `_image_ram_end` 全区间（data/noinit/bss） | 大，信息全 |
+
+MIN 模式可用 `zephyr,coredump` DT 节点（`memory-regions` 属性）追加特定设备内存区域，运行时也有 `coredump_device_register_memory()` 登记——"默认全 RAM 太大、MIN 又太少"时用这个组合。
+
+### 2.4 输出格式
+
+dump 是带 `#CD:` 前缀的十六进制流，`#CD:BEGIN#` … `#CD:END#` 包夹，二进制结构为：文件头（`ZE` + 版本 + 目标码 + 指针宽 + 原因）→ arch 寄存器块（`A`）→ 内存块（`M`，start/end 地址）。这个前缀设计是为了**在文本日志里存活**——日志换行、掺杂其他输出都能被解析器挑出来。
+
+## 3. shell 取回命令（按后端）
+
+shell 由 `CONFIG_DEBUG_COREDUMP_SHELL` 提供，命令集合**随所选后端变化**（v3.7.0 的 shell 实现分散在各后端文件内）：
+
+```text
+# logging 后端（coredump_backend_logging.c）
+coredump error get      # 打印后端错误码
+coredump error clear    # 清错误码
+
+# flash 分区后端（coredump_backend_flash_partition.c）
+coredump find           # 查询是否存在已存储的 dump
+coredump verify         # 校验存储 dump 的有效性
+coredump print          # 把存储 dump 以 #CD: 十六进制流打印出来 ← 取回用这个
+coredump erase          # 擦除存储的 dump
+coredump error get|clear
+```
+
+:::warning[没有 `coredump get`]
+v3.7.0 不存在 `coredump get` 命令——取回存储 dump 的命令是 **`coredump print`**。这也意味着取回需要能连上 shell：量产设备要么预留维护串口，要么把 dump 拷贝逻辑做进你的通信协议（`coredump_cmd(COREDUMP_CMD_COPY_STORED_DUMP, &copy_arg)` 可编程分块读取）。
+:::
+
+## 4. 主机端五步后验工作流
+
+以 logging 后端为例（官方文档 `services/debugging/coredump.html`，路径已验证）：
+
+```bash
+# 1. 抓串口日志存为文件（含 #CD:BEGIN# ... #CD:END# 段）
+# 2. 解析为二进制 dump
+./scripts/coredump/coredump_serial_log_parser.py coredump.log coredump.bin
+
+# 3. 启动主机端 gdbserver（注意：gdbserver 是主机端脚本，不是固件 Kconfig 后端）
+./scripts/coredump/coredump_gdbserver.py build/zephyr/zephyr.elf coredump.bin
+
+# 4. gdb 连接并复盘
+arm-none-eabi-gdb build/zephyr/zephyr.elf
+(gdb) target remote localhost:1234
+(gdb) info registers        # 崩溃瞬间的寄存器
+(gdb) bt                    # 崩溃点调用栈
+(gdb) frame 2               # 逐帧查变量
+
+# （备选）管道模式免起端口：
+(gdb) target remote | ./scripts/coredump/coredump_gdbserver.py --pipe build/zephyr/zephyr.elf coredump.bin
+```
+
+flash 后端流程相同，只是第 1 步换成"连接 shell → `coredump print` 抓十六进制流"。
+
+gdb 里最有用的三板斧：`bt` 看崩溃栈（DeepFehler 通常一眼定位）、`info registers` 看 pc/lr 落点（对照 .map 判段）、`print <变量>` 查崩溃时刻的数据状态——这三步与 [异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis) 的现场打印法互补。
+
+## 5. 量产现场方案
+
+```text
+开发期：logging 后端 + 串口抓取（最简单）
+        ↓ 进入量产验证
+量产期：flash 分区后端 + coredump-partition 独立分区
+        崩溃 → 自动写 flash → 重启继续跑
+        设备返修/服务时 → shell coredump print → parser → gdbserver 复盘
+        取回后 coredump erase 释放分区
+```
+
+配套纪律：
+
+1. **分区大小预算**：默认 LINKER_RAM 档的 dump ≈ 全 RAM 体积的两倍（十六进制翻倍 + 头部），RAM 64KB 的 EC 需要分区 ≥ 128KB——先 `ram_report`（见 [链接与内存布局](/docs/zephyr-kernel/16_linker_and_memory_layout) §5）再定分区；MIN 档 + `zephyr,coredump` 追加关键区域可显著压缩
+2. **dump 与日志互斥写 flash 的问题**：flash 后端 select STREAM_FLASH，崩溃路径写 flash 要评估最坏写入时长对看门狗的影响（必要时喂狗策略配合）
+3. **隐私与安全**：dump 含全 RAM 内容（含密钥缓冲区）——量产固件若启用了 [安全加固](/docs/best-practices/03_security_hardening) 中的敏感数据驻留策略，复核 dump 分区的读写权限与取回通道认证
+4. **回归验证**：把"注入崩溃 → 取回 dump → gdb bt 栈顶符号正确"做成 [测试框架](/docs/development/debug/06_test_framework) 的一个测试用例——后验通道本身也需要被测试
+
+## 6. 实操任务
+
+```bash
+# 1. 选一个支持 coredump 的目标（ARCH_SUPPORTS_COREDUMP 未满足时换 qemu_x86）
+west build -b qemu_x86 samples/hello_world -p -- \
+  -DCONFIG_DEBUG_COREDUMP=y -DCONFIG_DEBUG_COREDUMP_SHELL=y \
+  -DCONFIG_SHELL=y
+west build -t run
+
+# 2. 注入崩溃（shell）
+uart:~$ kernel stack   # 或直接在代码里造空指针解引用
+# 观察 ">>> ZEPHYR FATAL ERROR" 后紧跟的 #CD:BEGIN# ... #CD:END# 流
+
+# 3. 走完 §4 五步：parser → gdbserver → gdb bt，
+#    确认栈顶函数名与崩溃点一致
+
+# 4. （进阶）切 flash 后端 + MIN 档重跑，对比 dump 体积，
+#    并用 shell coredump print 取回验证流程
+```
+
+## 7. 学习总结
+
+- coredump 的调用点是 **`z_fatal_error()`（在 `k_sys_fatal_error_handler` 之前）**——开配置即生效，默认 handler 不负责 dump；"dump 后自动重启"才需要覆写 handler
+- 后端四选一：**logging（默认，串口流）** / **flash 分区（量产现场）** / ADSP 内存窗 / 自定义；量产 EC 用 flash 后端 + `coredump-partition` 分区
+- dump 范围：MIN（线程栈+结构）vs **LINKER_RAM（默认全 RAM）**；`zephyr,coredump` 节点可精细追加区域
+- shell 命令分后端：logging 只有 `error get/clear`；flash 后端有 `find/verify/print/erase`——**取回用 `coredump print`，没有 `coredump get`**
+- 主机端五步：抓日志 → `coredump_serial_log_parser.py` → `coredump_gdbserver.py` → gdb `target remote` → `bt`/寄存器/变量；gdbserver 是主机端脚本而非固件后端
+- 量产配套：分区体积按 RAM×2 预算、崩溃写 flash 与看门狗的时序、dump 含全 RAM 内容的安全复核、后验通道本身进回归测试
+
+## 8. 参考资源
+
+- [Coredump 文档（v3.7.0）](https://docs.zephyrproject.org/3.7.0/services/debugging/coredump.html) —— 五步工作流官方出处
+- [subsys/debug/coredump/Kconfig（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/subsys/debug/coredump/Kconfig) —— 后端与档位符号
+- [kernel/fatal.c（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/kernel/fatal.c) —— `z_fatal_error` 调用序
+- [scripts/coredump/（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/tree/v3.7.0/scripts/coredump) —— parser 与 gdbserver 脚本
+- 内部衔接：[异常与崩溃分析](/docs/development/debug/03_exception_and_crash_analysis)（现场打印与断言）、[日志与调试](/docs/development/debug/01_logging_and_debug)（logging 后端的承载通道）、[链接与内存布局](/docs/zephyr-kernel/16_linker_and_memory_layout)（dump 范围与 RAM 分区）、[安全加固](/docs/best-practices/03_security_hardening)（dump 内容的敏感数据复核）

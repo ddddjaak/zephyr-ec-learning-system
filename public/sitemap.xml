@@ -3,398 +3,414 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/best-practices/01_coding_style_and_commits/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/best-practices/02_power_optimization/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/best-practices/03_security_hardening/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/best-practices/04_integration_and_collaboration/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/best-practices/05_driver_development/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/best-practices/06_multithreading_and_tasks/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/best-practices/07_logging_and_diagnostics/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/best-practices/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/appdev/01_new_feature_module/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/appdev/02_kconfig_system/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/appdev/03_peripheral_driver_guide/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/appdev/04_task_and_event_model/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/appdev/05_host_communication/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/appdev/06_power_and_wakeup/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/appdev/07_system_services/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/appdev/08_debug_and_troubleshooting/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/appdev/09_shell_command_dev/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/architecture/01_layered_architecture/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/architecture/02_vs_legacy_ec/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/architecture/03_directory_structure/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/architecture/04_source_mapping/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/architecture/05_configuration/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/debug/01_logging_and_debug/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/debug/02_unit_test_and_simulation/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/debug/03_exception_and_crash_analysis/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/debug/04_functional_verification/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/debug/05_faq_and_troubleshooting/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/debug/06_test_framework/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
+  </url>
+  <url>
+    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/debug/07_coredump/</loc>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/01_system_infrastructure/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/02_host_communication/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/03_power_management/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/04_keyboard_input/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/05_battery_charging/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/06_thermal_management/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/07_usb_and_pd/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/08_security_and_firmware_update/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/09_peripherals_and_storage/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/development/modules/10_debug_and_gpio/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/getting-started/00_learning_paths/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/getting-started/01_setup/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/getting-started/02_source_and_build/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/getting-started/03_flash_and_verify/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/getting-started/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs//</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/01_porting_guide/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/02_board_initialization/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/03_devicetree_and_driver/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/04_kconfig_and_optimization/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/05_new_driver_development/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/06_migration_from_legacy_ec/01_ite/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/06_migration_from_legacy_ec/02_nuvoton/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/06_migration_from_legacy_ec/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/07_bringup_checklist/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/08_version_upgrade/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/porting/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/01_battery_and_power/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/02_communication_protocols/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/03_peripherals_and_input/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/04_build_and_config/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/05_runtime_crash/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/06_firmware_upgrade/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/07_test_and_ci/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/08_usb_and_pd/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/09_thermal_management/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/10_ec_host_interaction/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/11_interrupt_and_timing/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/12_gpio_and_pinmux/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/qa/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/01_command_reference/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/02_glossary/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/03_hardware_interface/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/04_open_source_resources/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/05_kconfig_cheatsheet/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/06_devicetree_cheatsheet/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/07_error_codes/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/08_release_notes/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/09_manual_contribution/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/reference/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/01_introduction/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/02_project_structure/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/03_west_tool/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/04_basic_examples/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/05_kernel_mechanisms/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/06_config_system/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/07_driver_model/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/08_subsystems/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/09_architecture_design/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/10_optimization/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/11_security/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/12_kernel_source/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/13_async_messaging/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/14_userspace/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/15_object_lifecycle/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/16_linker_and_memory_layout/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/17_measurement_and_tracing/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
-    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/18_community_contribution/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/18_data_passing/</loc>
+    <lastmod>2026-11-13</lastmod>
+  </url>
+  <url>
+    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/19_input_subsystem/</loc>
+    <lastmod>2026-11-13</lastmod>
+  </url>
+  <url>
+    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/20_sensor_subsystem/</loc>
+    <lastmod>2026-11-13</lastmod>
+  </url>
+  <url>
+    <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/21_community_contribution/</loc>
+    <lastmod>2026-11-13</lastmod>
   </url>
   <url>
     <loc>https://ddddjaak.github.io/zephyr-ec-learning-system/docs/zephyr-kernel/</loc>
-    <lastmod>2026-11-12</lastmod>
+    <lastmod>2026-11-13</lastmod>
   </url>
 </urlset>

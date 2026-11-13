@@ -193,6 +193,41 @@ void save_reboot_info(uint32_t cause)
 
 部分 SoC 支持只在待机/深睡时保电的 RAM 区（retention RAM）。若需要"睡眠保留 + 复位保留"叠加，通常要把保留数据放进 DT 指定的专用内存节点并在自定义链接脚本中布段——此时用 §2.2 的自定义脚本机制。纯软复位保留用 `.noinit` 即可。
 
+### 4.3 retention 子系统：带校验的保留区抽象
+
+手工 `.noinit` 有两个工程弱点：无完整性校验（§4.1 的 magic 要自己写）、位置由编译器决定（不能精确控制落在哪块保留内存）。Zephyr 的 retention 子系统（v3.7.0 存在于 `subsys/retention/`）把这层做成 **DT 声明 + 设备 API** 的正式抽象：
+
+```dts
+/* 层级：保留内存载体 → retained_mem 驱动 → retention 区域 */
+sram@0 {
+	zephyr,memory-region = "RetainedMem";
+	retainedmem: retainedmem {
+		compatible = "zephyr,retained-ram";    /* 载体驱动（另有 nordic,nrf-gpregret 保留寄存器等） */
+		retention@0 {
+			compatible = "zephyr,retention";
+			reg = <0x0 0x40>;              /* 在载体内的偏移与大小 */
+			prefix = [04 fa];              /* magic 前缀，用于 is_valid 判定 */
+			checksum = <1>;                /* 0/1/2/4 字节 CRC */
+		};
+	};
+};
+```
+
+```c
+#include <zephyr/retention/retention.h>
+
+/* 设备级统一 API（v3.7.0 核实） */
+retention_size(dev);                    /* 区域大小 */
+retention_is_valid(dev);                /* prefix + checksum 校验——取代手工 magic */
+retention_read(dev, offset, buf, len);
+retention_write(dev, offset, buf, len);
+retention_clear(dev);
+```
+
+两个建在其上的子系统：`bootmode`（`CONFIG_RETENTION_BOOT_MODE`，chosen 节点 `zephyr,boot-mode`，`bootmode_set/check/clear`——无按键进 bootloader 的经典载体）与 bootloader info（`CONFIG_RETENTION_BOOTLOADER_INFO`，MCUboot 与应用共享启动信息，`blinfo_lookup` 读取）。
+
+**与 `.noinit` 的分工**：`.noinit` 是纯链接段——零开销、无校验、无格式，适合"我自己定义布局"的简单场景；retention 是驱动抽象——DT 精确指定载体与位置、内置 magic+CRC、给 bootmode/blinfo 等子系统消费，代价是依赖 `RETAINED_MEM` 驱动（新芯片需要移植这个驱动）。EC 量产的重启原因统计建议用 retention（校验白送），调试期的临时数据用 `.noinit`。
+
 ## 5. map 文件与体积分析
 
 ### 5.1 三层工具
@@ -273,7 +308,7 @@ grep " main$" build/zephyr/zephyr.map
 - Zephyr 镜像 = 基础五分区（`.text`/`.rodata`/`.data`/`.bss`/`.noinit`）+ 内核注册段；EC 上 XIP 决定代码留 FLASH、数据进 RAM
 - 链接脚本由 **Devicetree → 架构模板 → 生成 linker.cmd** 三层合成；自定义链接脚本是最后手段，`CONFIG_CUSTOM_LINKER_SCRIPT` 挂载
 - **iterable sections 是 Zephyr 的"链接器自动建表"机制**：`STRUCT_SECTION_ITERABLE` 声明 + `STRUCT_SECTION_FOREACH` 遍历，设备/log/settings/zbus 全靠它；自定义模块可直接复用
-- `.noinit` 保存跨软复位数据（重启原因、崩溃现场），必须配 magic + 校验，且在真实目标板验证幸存性
+- `.noinit` 保存跨软复位数据（重启原因、崩溃现场），必须配 magic + 校验，且在真实目标板验证幸存性；**retention 子系统**（`zephyr,retention` DT 节点 + 设备 API）把校验与位置控制做成正式抽象，量产重启统计推荐用它
 - 体积问题按 **report → map → nm/bloaty** 逐级放大定位；构建期溢出按"先 report 再裁剪"的顺序修
 
 ## 9. 参考资源
@@ -281,4 +316,5 @@ grep " main$" build/zephyr/zephyr.map
 - [include/zephyr/linker/ 目录（v3.7.0 源码）](https://github.com/zephyrproject-rtos/zephyr/tree/v3.7.0/include/zephyr/linker) —— `common-*.ld`、`iterable_sections.h`、`devicetree_regions.h`
 - [include/zephyr/sys/iterable_sections.h（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/include/zephyr/sys/iterable_sections.h) —— `STRUCT_SECTION_*` 运行时宏定义
 - [custom linker script Kconfig（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/Kconfig.zephyr) —— `HAVE_CUSTOM_LINKER_SCRIPT` / `CUSTOM_LINKER_SCRIPT`
+- [retention 绑定（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/dts/bindings/retention/zephyr,retention.yaml) —— `zephyr,retention` 节点属性（prefix/checksum）
 - 内部衔接：[系统优化](/docs/zephyr-kernel/10_optimization)（report 与 Kconfig 裁剪）、[对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)（静态分配与栈测量）、[异步与消息总线](/docs/zephyr-kernel/13_async_messaging)（zbus 段的运用方）、[驱动模型](/docs/zephyr-kernel/07_driver_model)（DEVICE_DEFINE 注册侧）

@@ -1,0 +1,426 @@
+---
+title: "数据传递原语与原子操作"
+description: "补全内核数据面——ring_buf 环形缓冲（字节/条目/零拷贝）、k_stack 资源栈、k_lifo、k_pipe 字节管道与 min_xfer 语义、k_mbox 邮箱握手、k_condvar 条件变量、atomic 原子操作"
+---
+
+:::note[阅读提示]
+本章节涵盖 Zephyr RTOS 的通用技术概念。芯海 EC 平台的具体应用请参考 **开发指南** 与 **移植指南**。
+:::
+
+:::info[学习目标]
+通过本章学习，你将掌握：
+
+- `ring_buf` 的两种模式（字节流 / 变长条目）与 claim/finish 零拷贝用法，ISR→线程数据流的标准搭建
+- `k_stack` 的资源分发模式：为什么"发块编号"比"发内存指针"更安全
+- `k_lifo` 的首字保留纪律，与 `k_fifo` 的同族关系
+- `k_pipe` 的 min_xfer 部分传输语义表（0 / -EIO / -EAGAIN 何时返回）
+- `k_mbox` 的描述符交换模型：零拷贝、线程点名、"处理完才放行"的握手
+- `k_condvar` 与 `k_mutex` 的原子等待契约和谓词循环写法
+- `atomic` 函数族（返回旧值语义）与 `ATOMIC_DEFINE` 位图在 ISR 共享状态里的用法
+- 在 k_msgq / k_fifo（见 [异步与消息总线](/docs/zephyr-kernel/13_async_messaging)）之外做出正确的原语选型
+:::
+
+## 概述
+
+[内核机制](/docs/zephyr-kernel/05_kernel_mechanisms) 与 [异步与消息总线](/docs/zephyr-kernel/13_async_messaging) 覆盖了 `k_msgq` / `k_fifo` / `k_poll` / `zbus` 这组主力原语。但 Zephyr 的数据面还有一批"边角"原语，恰好对应 EC 固件的几个高频场景：
+
+- **串口 RX 字节流缓冲** → `ring_buf`（消息边界不存在的连续流）
+- **内存块分发** → `k_stack`（把"可用块编号"发给等待的线程）
+- **固件升级大块搬运** → `k_pipe`（"至少传这么多才返回"的流式语义）
+- **大块数据的请求-响应握手** → `k_mbox`（零拷贝 + 线程点名 + 处理确认）
+- **共享状态的条件等待** → `k_condvar`（配合 `k_mutex`）
+- **ISR 与线程共享的标志位/计数器** → `atomic`
+
+本页逐个拆解。所有 API 均对照 v3.7.0 源码核实（这几个原语在 v3.7.0 都定义在 `include/zephyr/kernel.h`，`ring_buf` 在 `include/zephyr/sys/ring_buffer.h`）。
+
+## 1. ring_buf：无阻塞的环形缓冲
+
+### 1.1 为什么需要它
+
+`k_msgq` 会阻塞、有消息边界、定长拷贝——这三条对"串口接收字节流"全都不合适：字节到达不等人、没有边界、长度不定。`ring_buf` 是**永不阻塞**的环形缓冲：满了就丢（返回值小于请求量），空的就报 0，适合 ISR 与线程之间的连续数据流水线。注意它**不唤醒任何线程**——要配 `k_sem`/`k_poll`（见 §1.5）。
+
+### 1.2 两种模式
+
+| 模式 | 定义宏 | 单元 | 边界 | 适用 |
+|------|--------|------|------|------|
+| 字节模式 | `RING_BUF_DECLARE(name, size)` | 字节 | 无 | 连续流（UART RX、日志缓冲） |
+| 条目模式 | `RING_BUF_ITEM_DECLARE(name, size32)` | 32 位字 | 每条带 4 字节头（type16/len8/value8 位域） | 带类型标签的事件记录 |
+
+条目模式每条最大 255 字（1020 字节），`type`/`value` 是应用自定义元数据；**同一缓冲实例禁止混用两种模式**。
+
+### 1.3 字节模式：拷贝 API
+
+```c
+RING_BUF_DECLARE(uart_rx, 512);
+
+/* 写入：返回实际写入量（空间不足时能塞多少塞多少，不阻塞） */
+uint32_t n = ring_buf_put(&uart_rx, data, len);
+
+/* 读出：返回实际读出量；data 传 NULL 表示丢弃 */
+uint32_t m = ring_buf_get(&uart_rx, buf, sizeof(buf));
+
+/* 窥视：读出不移除（data 不可为 NULL） */
+uint32_t p = ring_buf_peek(&uart_rx, buf, sizeof(buf));
+
+/* 状态查询 */
+ring_buf_is_empty(&uart_rx);
+ring_buf_size_get(&uart_rx);       /* 已用 */
+ring_buf_space_get(&uart_rx);      /* 剩余可写 */
+ring_buf_capacity_get(&uart_rx);   /* 总容量 */
+```
+
+### 1.4 零拷贝：claim / finish
+
+协议解析要"从缓冲里直接看数据"而不想多拷贝一次，用 claim 族（v3.7.0 的正确名字是 `*_claim`/`*_finish`，不是 commit）：
+
+```c
+/* 写侧零拷贝：外设 DMA 直写缓冲 */
+uint8_t *dst;
+uint32_t claimable = ring_buf_put_claim(&uart_rx, &dst, 256);
+/* 把 dst..dst+claimable 交给 DMA 或直接填充 */
+int rc = ring_buf_put_finish(&uart_rx, actually_written);  /* 0 成功 / -EINVAL */
+
+/* 读侧零拷贝：解析器直接引用缓冲内数据 */
+uint8_t *src;
+uint32_t avail = ring_buf_get_claim(&uart_rx, &src, 512);
+size_t consumed = parse_protocol(src, avail);     /* 只解析不动数据 */
+ring_buf_get_finish(&uart_rx, consumed);          /* 释放已消费部分 */
+/* get_finish(0) = 整体撤销本次 claim（peek 的底层实现） */
+```
+
+三条 claim 纪律（源码核实）：
+
+1. `*_claim` 返回的是**连续段**指针——因回绕（wrap）返回量可能小于请求，跨 wrap 的数据要 claim 两次
+2. `put_finish(size)` 的 size 必须不超过此前 claim 的累计量；`get_finish(size)` 释放已读字节
+3. **claim 与 finish 之间禁止并发 claim**——同一方向不支持多个独立 claim 区
+
+### 1.5 并发纪律与线程唤醒
+
+多写者或多读者必须**自行加锁**（mutex 或关中断窗口）；最常见的安全形态是"单写者 ISR + 单读者线程"：
+
+```c
+/* ISR（唯一写者）：塞字节 + 唤醒处理线程 */
+void uart_rx_isr(const struct device *dev)
+{
+	uint8_t ch;
+	while (uart_fifo_read(dev, &ch, 1)) {
+		ring_buf_put(&uart_rx, &ch, 1);
+	}
+	k_sem_give(&rx_ready);
+}
+
+/* 处理线程（唯一读者） */
+void rx_thread_fn(void)
+{
+	for (;;) {
+		k_sem_take(&rx_ready, K_FOREVER);
+		uint8_t *src;
+		uint32_t avail;
+		while ((avail = ring_buf_get_claim(&uart_rx, &src, 1024)) > 0) {
+			size_t used = parse(src, avail);
+			ring_buf_get_finish(&uart_rx, used);
+			if (used < avail) break;   /* 剩余是不完整帧，等下次 */
+		}
+	}
+}
+```
+
+### 1.6 条目模式：带标签的事件流
+
+```c
+RING_BUF_ITEM_DECLARE(event_log, 256);   /* 256 个 32 位字 */
+
+/* 记录一条事件（type=事件类，value=子码）——空间不足整条拒绝（-EMSGSIZE），不留半条 */
+uint32_t payload[2] = { ts, code };
+ring_buf_item_put(&event_log, EVT_BATTERY, sub_code, payload,
+		  RING_BUF_ITEM_SIZEOF(payload));
+
+/* 读取一条 */
+uint16_t type; uint8_t value; uint32_t data[2]; uint8_t len32;
+int rc = ring_buf_item_get(&event_log, &type, &value, data, &len32);
+/* 0 成功（len32 回填实际字数）/ -EAGAIN 空 / -EMSGSIZE data 太小（len32 回填需求量） */
+```
+
+与字节模式"能塞多少塞多少"不同，条目模式的 put 是**全有或全无**——这保留了消息边界，适合崩溃前的最后事件序列、日志环。
+
+### 1.7 选型：ring_buf vs k_msgq
+
+| 维度 | ring_buf（字节模式） | k_msgq |
+|------|---------------------|--------|
+| 边界 | 无（纯流） | 整条定长消息 |
+| 阻塞 | 永不阻塞，塞不下就丢 | 可阻塞唤醒双方 |
+| 唤醒 | 无（自己配 sem/poll） | 内置 |
+| 拷贝 | put/get 拷贝，claim 可零拷贝 | 整条拷贝 |
+| 场景 | 连续字节流（UART/日志） | 离散定长命令/事件 |
+
+## 2. k_stack：资源分发栈
+
+`k_stack` 是固定深度的 LIFO **值**栈（元素类型 `stack_data_t` 即 `uintptr_t`）。它不是存数据，而是**分发"可用资源"**——最经典的用法是配合 [k_mem_slab](/docs/zephyr-kernel/15_object_lifecycle) 分发块编号：
+
+```c
+#define NUM_BLOCKS 8
+K_MEM_SLAB_DEFINE(slab, 128, NUM_BLOCKS, 4);   /* 8 块 × 128B */
+K_STACK_DEFINE(free_blocks, NUM_BLOCKS);
+
+void pool_init(void)
+{
+	k_stack_init(&free_blocks, buf, NUM_BLOCKS);
+	for (int i = NUM_BLOCKS - 1; i >= 0; i--) {
+		k_stack_push(&free_blocks, i);   /* 压入块编号 0..7 */
+	}
+}
+
+/* 消费者：领编号 → 用块 → 还编号（ISR 中 pop 必须 K_NO_WAIT） */
+int acquire_block(void **mem)
+{
+	stack_data_t idx;
+	if (k_stack_pop(&free_blocks, &idx, K_MSEC(10))) {
+		return -ENOMEM;
+	}
+	k_mem_slab_alloc(&slab, mem, K_NO_WAIT);   /* 编号即位序，必成功 */
+	return (int)idx;
+}
+
+void release_block(void *mem, int idx)
+{
+	k_mem_slab_free(&slab, mem);
+	k_stack_push(&free_blocks, idx);   /* push 永不阻塞（栈满=编程错误） */
+}
+```
+
+API（v3.7.0）：`k_stack_init(stack, buffer, num)` / `k_stack_alloc_init`（从堆分配缓冲，可能 -ENOMEM）/ `k_stack_push`（0 / -ENOMEM 满；ISR 可调）/ `k_stack_pop(stack, &data, timeout)`（0 / -EBUSY 无等待即空 / -EAGAIN 超时）。
+
+为什么"发编号"而不是"发指针"：编号由 slab 契约解释，**栈里永远不会出现野指针**——释放逻辑只要归还编号即可，比在栈里传 `void *` 再各自 `k_free` 更可控。
+
+## 3. k_lifo：后进先出的指针队列
+
+`k_lifo` 与 `k_fifo` 同宗（底层都是 `k_queue`，仅头插 vs 尾插之差），传递**指针**、不拷贝数据：
+
+```c
+K_LIFO_DEFINE(msg_pool_lifo);
+
+/* 放入：ISR 可调；alloc_put 变体为数据分配内核内存（0/-ENOMEM） */
+k_lifo_put(&msg_pool_lifo, msg);
+
+/* 取出：空/超时返回 NULL；ISR 必须 K_NO_WAIT */
+struct my_msg *m = k_lifo_get(&msg_pool_lifo, K_MSEC(100));
+```
+
+:::warning[首字保留纪律]
+队列节点信息存在条目自身的**第一个字**里——用户结构第一个成员会被内核改写。惯例是结构体以 `sys_snode_t node;` 开头（或至少预留 `void *` 首字段），绝不能把首字当业务数据。
+:::
+
+何时用 LIFO 而非 FIFO：**对象池回收**场景——刚还回来的内存条目下次优先复用（CPU cache 更友好），LIFO 天然符合；事件序列需要保序则用 FIFO。
+
+## 4. k_pipe：带"最少传输"语义的字节管道
+
+`k_pipe` 是**可阻塞**的字节流管道（对比：ring_buf 永不阻塞），核心特色是 `min_xfer`——"至少传这么多字节才算成功"：
+
+```c
+K_PIPE_DEFINE(upgrade_pipe, 1024, 4);
+
+/* 写侧：要写 4096B，至少传 512B 才算成功，最多等到 1s */
+size_t written;
+int rc = k_pipe_put(&upgrade_pipe, data, 4096, &written, 512, K_MSEC(1000));
+
+/* 读侧：对称 */
+size_t read;
+rc = k_pipe_get(&upgrade_pipe, buf, 1024, &read, 256, K_FOREVER);
+```
+
+返回码语义（源码 `kernel/pipes.c` 核实）：
+
+| 实际传输量 | 不等待（K_NO_WAIT） | 等待（含超时） |
+|-----------|--------------------|---------------|
+| ≥ min_xfer | 0 | 0 |
+| < min_xfer | **-EIO**（0 字节传输） | **-EAGAIN**（超时，已传 0..min_xfer-1 字节） |
+
+配套：`min_xfer > bytes_to_write` 直接 -EINVAL；`k_pipe_read_avail`/`k_pipe_write_avail` 查当前可读/可写量；`k_pipe_flush` 清缓冲并放弃挂起写者；缓冲大小可设 0（读写方直接对接，零缓冲管道）。
+
+**EC 场景**：固件升级数据流——host 一次给 4KB，升级线程按 flash 页（256B）分块烧写。用 `k_pipe_put(data, 4096, &written, 256, K_FOREVER)`，写侧保证"至少 256B 被消费"才继续，天然完成背压。纯字节流语义下**消息边界自己定**（本例按页切）。
+
+## 5. k_mbox：带握手的零拷贝邮箱
+
+`k_mbox` 传的不是数据而是**消息描述符**（含发送方缓冲指针），并支持线程点名与处理确认——它是四个数据原语里唯一"发送方知道接收方何时处理完"的：
+
+```c
+K_MBOX_DEFINE(cmd_mbox);
+
+/* 发送方 */
+void sender(struct request *req)
+{
+	struct k_mbox_msg tx = {
+		.size = sizeof(*req),
+		.info = REQ_MAGIC,          /* 应用自定义标记 */
+		.tx_data = req,             /* 只交指针，不拷贝 */
+		.tx_target_thread = K_ANY,  /* 或点名接收线程 */
+	};
+	int rc = k_mbox_put(&cmd_mbox, &tx, K_SECONDS(1));
+	/* rc==0 表示接收方已"处理完"本消息（见下），req 此后不可再引用 */
+}
+
+/* 接收方 */
+void receiver(void)
+{
+	struct k_mbox_msg rx = {
+		.rx_source_thread = K_ANY,  /* 或点名来源线程 */
+	};
+	for (;;) {
+		struct request *req;
+		if (k_mbox_get(&cmd_mbox, &rx, &req, K_FOREVER)) {
+			continue;
+		}
+		handle(req);
+		/* 处理完毕必须"处置"消息——发送方在此刻被唤醒：
+		   若 get 时没给 buffer，用 k_mbox_data_get(&rx, NULL) 丢弃即可 */
+	}
+}
+```
+
+要点（源码 `kernel/mailbox.c` 核实）：
+
+1. **线程匹配**：消息投递条件是"目标匹配 且 来源匹配"——发送方 `tx_target_thread` 点名接收者（`K_ANY` 任意），接收方 `rx_source_thread` 点名来源者；不匹配的消息继续等下一个接收者
+2. **同步 put 的阻塞语义**：timeout 只覆盖"等待被接收"阶段；**被接收后要等接收方处置完才返回**（处置 = `k_mbox_data_get` 被调用，或 get 时直接给了 buffer）
+3. **零拷贝**：put/get 只交换描述符；接收方拿到 `tx_data` 指针直接读，或传 buffer 让内核拷走
+4. **异步发送**：`k_mbox_async_put(mbox, &tx, sem)` 不阻塞，消息"被接收并处理完毕"时 `k_sem_give(sem)`（描述符从 `CONFIG_NUM_MBOX_ASYNC_MSGS` 池分配）
+5. **rx_msg.size 被钳到 tx 的 size**；`info` 在双方描述符间互换
+
+选型一句话：要**确认式大块数据握手**用 mbox；只要异步丢指针用 k_fifo/k_lifo（轻量得多）；定长命令流用 k_msgq。
+
+## 6. k_condvar：条件变量
+
+条件变量解决"线程 A 要等某条件成立，条件由线程 B 在持锁状态下改变"的同步问题。v3.7.0 API：
+
+```c
+K_CONDVAR_DEFINE(data_ready_cv);
+K_MUTEX_DEFINE(data_lock);
+static bool data_valid;
+
+/* 等待方：必须已持有 mutex 进入 */
+int wait_for_data(void)
+{
+	k_mutex_lock(&data_lock, K_FOREVER);
+	while (!data_valid) {                       /* 谓词必须用 while */
+		int rc = k_condvar_wait(&data_ready_cv, &data_lock, K_SECONDS(2));
+		if (rc == -EAGAIN) {
+			/* 超时路径：此时已重新持锁，可做降级 */
+		}
+	}
+	/* 此处持锁 + data_valid == true */
+	consume_data_locked();
+	k_mutex_unlock(&data_lock);
+	return 0;
+}
+
+/* 生产方：持锁改谓词，然后唤醒 */
+void produce_data(void)
+{
+	k_mutex_lock(&data_lock, K_FOREVER);
+	data_valid = true;
+	k_mutex_unlock(&data_lock);          /* 先解锁再唤醒也正确；顺序均可 */
+	k_condvar_signal(&data_ready_cv);    /* 唤醒一个；broadcast 唤醒全部（返回唤醒数） */
+}
+```
+
+三条契约（`kernel/condvar.c` 核实）：
+
+1. `k_condvar_wait` 必须**已持有 mutex** 时调用；内核原子地"解锁 → 挂入等待队列"，被唤醒后**无条件重新拿锁**再返回——因此谓词检查要在锁内，且用 `while` 重检（signal 时机与谓词变化之间可能被抢占）
+2. `signal`/`broadcast` 只负责唤醒，**不代持锁**；它们可以在锁外调用
+3. broadcast 返回值是被唤醒的线程数（0 = 无等待者）
+
+与 `k_sem` 的选型：计数语义（攒 N 次给 N 次）用 `k_sem`；"条件布尔成立与否 + 多方共享谓词"用 condvar；多路事件标志位用 `k_event`（见 [应用开发·任务与事件模型](/docs/development/appdev/04_task_and_event_model)）。
+
+## 7. atomic：原子操作与位图
+
+### 7.1 函数族
+
+ISR 与线程共享一个计数器/标志位时，加锁太重——用原子操作（`include/zephyr/sys/atomic.h`，v3.7.0；类型 `atomic_t` 即 `long`）：
+
+| 函数 | 语义 | 返回 |
+|------|------|------|
+| `atomic_get` / `atomic_set` / `atomic_clear` | 读 / 写并回旧值 / 置零回旧值 | 旧值 |
+| `atomic_inc` / `atomic_dec` | 自增 / 自减 | **旧值** |
+| `atomic_add` / `atomic_sub` | 加 / 减 | 旧值 |
+| `atomic_or` / `atomic_and` / `atomic_xor` / `atomic_nand` | 位运算 | 旧值 |
+| `atomic_cas(target, old, new)` | 仅当当前值==old 时写入 new | `bool` 是否成功 |
+
+**几乎所有函数返回旧值**——`atomic_inc` 返回的是加之前的值，要拿"加之后的计数"用 `atomic_inc` 返回值 +1 或改用 `atomic_add(t,1)` 的返回值 +1。CAS 是唯一返回成功标志的，也是写无锁算法的基石。
+
+```c
+atomic_t event_seq;
+
+/* ISR：无锁递增序号 */
+void sensor_isr(void)
+{
+	atomic_inc(&event_seq);
+}
+
+/* 线程：比较序号判断有没有新事件 */
+bool has_new_events(atomic_val_t last_seen)
+{
+	return atomic_get(&event_seq) != last_seen;
+}
+```
+
+### 7.2 原子位图
+
+一组"每个位一个标志"的场景用位图宏：
+
+```c
+#define NUM_CHANNELS 64
+ATOMIC_DEFINE(ch_flags, NUM_CHANNELS);          /* 自动按 32 位/字展开 */
+
+/* ISR 置位；线程测试并清位（原子） */
+void isr_set_ready(int ch)   { atomic_set_bit(ch_flags, ch); }
+bool claim_ready(int ch)     { return atomic_test_and_clear_bit(ch_flags, ch); }
+```
+
+位操作辅助族（全部原子，作用于 `atomic_t` 数组）：`atomic_test_bit` / `atomic_test_and_set_bit` / `atomic_test_and_clear_bit` / `atomic_set_bit` / `atomic_set_bit_to` / `atomic_clear_bit`。
+
+### 7.3 与 sys_bitfield / sys_set_bit 的区分
+
+- `atomic_*_bit`：作用于 `atomic_t` 数组，**原子**，跨 ISR/线程安全
+- `sys_set_bit` / `sys_test_bit` 等（`sys_bitops.h`）：作用于**内存地址**的 32 位位操作，**非原子**——只用于寄存器 poking 或单上下文场景
+- `sys_bitfield_*`（同头文件，仅 5 个函数）：跨字连续编址的位域访问，同样**非原子**
+
+共享状态一律用 atomic 族；不要拿 sys_set_bit 做 ISR/线程同步。
+
+## 8. 实操任务
+
+`native_sim` 上免硬件完成：
+
+```bash
+# 1. ring_buf 零拷贝 + 条目模式
+#    建一个最小应用，把 §1.5 的 ISR→线程模板改为 work 回调驱动：
+#    put_claim 模拟填充 → get_claim 解析帧 → get_finish 释放，
+#    断言：claim 返回量跨 wrap 时小于请求量；get_finish(0) 撤销后 size 不变
+
+# 2. condvar 生产者-消费者
+#    两个线程 + §6 的 while 谓词模板，验证：
+#    signal 前 unlock 也能唤醒；超时路径返回后重新持锁；broadcast 返回唤醒计数
+
+# 3. atomic 竞态复现
+#    两个线程各对普通 int 自增 100000 次与 atomic_inc 100000 次对比，
+#    断言：普通 int 结果 < 200000（丢更新），atomic 结果 == 200000
+```
+
+**进阶**：把 §2 的 k_stack+slab 资源池接到 [对象生命周期](/docs/zephyr-kernel/15_object_lifecycle) 的 slab 实操上，对比"只发编号"与"slab 直接 alloc"的失败路径（栈空 vs slab 空时的行为差异）。
+
+## 9. 学习总结
+
+- **ring_buf 是永不阻塞的字节/条目环形缓冲**：字节模式塞不下就丢、条目模式全有或全无；claim/finish 做零拷贝（v3.7.0 名字是 `put_claim/put_finish/get_claim/get_finish`）；自身不唤醒线程，配 `k_sem`/`k_poll`
+- **k_stack 发"块编号"不发指针**，配合 k_mem_slab 构成无野指针的资源池；push 满即编程错误，pop 支持 K_NO_WAIT/K_MSEC
+- **k_lifo 与 k_fifo 同宗**（k_queue 头插 vs 尾插），指针传递、**首字保留给内核**；对象池回收用 LIFO（cache 友好），保序用 FIFO
+- **k_pipe 的 min_xfer 是"至少传多少才成功"**：≥min → 0；超时不达 → -EAGAIN；K_NO_WAIT 不达 → -EIO 且 0 字节；适合大块流式搬运与背压
+- **k_mbox 传描述符不传数据**：零拷贝、`tx_target_thread`/`rx_source_thread` 双向点名、同步 put 等接收方**处置完**才返回、`async_put` 处置完给信号量；确认式握手专用
+- **k_condvar 必须配 k_mutex**：wait 原子解锁入队、唤醒后重新拿锁；谓词用 while 重检；信号在锁外调用合法
+- **atomic 几乎全返回旧值**（CAS 除外）；ISR/线程共享状态用 atomic 位图；`sys_set_bit`/`sys_bitfield_*` 非原子，只用于寄存器操作
+
+## 10. 参考资源
+
+- [include/zephyr/kernel.h（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/include/zephyr/kernel.h) —— k_stack / k_lifo / k_pipe / k_mbox / k_condvar 全部定义所在
+- [include/zephyr/sys/ring_buffer.h（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/include/zephyr/sys/ring_buffer.h)
+- [include/zephyr/sys/atomic.h（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/include/zephyr/sys/atomic.h)
+- [kernel/mailbox.c（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/kernel/mailbox.c) —— mbox 匹配与处置语义
+- [kernel/pipes.c（v3.7.0）](https://github.com/zephyrproject-rtos/zephyr/blob/v3.7.0/kernel/pipes.c) —— min_xfer 返回码表
+- 内部衔接：[异步与消息总线](/docs/zephyr-kernel/13_async_messaging)（k_msgq / k_fifo / k_poll / zbus 主力原语）、[内核机制](/docs/zephyr-kernel/05_kernel_mechanisms)（k_fifo / workqueue）、[对象生命周期](/docs/zephyr-kernel/15_object_lifecycle)（k_mem_slab 与 k_stack 组合）、[应用开发·任务与事件模型](/docs/development/appdev/04_task_and_event_model)（k_event 与 EC 事件框架）

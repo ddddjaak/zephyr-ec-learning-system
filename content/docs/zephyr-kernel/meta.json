@@ -19,6 +19,9 @@
     "15_object_lifecycle",
     "16_linker_and_memory_layout",
     "17_measurement_and_tracing",
-    "18_community_contribution"
+    "18_data_passing",
+    "19_input_subsystem",
+    "20_sensor_subsystem",
+    "21_community_contribution"
   ]
 }

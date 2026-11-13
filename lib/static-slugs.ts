@@ -132,6 +132,11 @@ export const staticSlugs: string[][] = [
     "06_test_framework"
   ],
   [
+    "development",
+    "debug",
+    "07_coredump"
+  ],
+  [
     "development"
   ],
   [
@@ -409,7 +414,19 @@ export const staticSlugs: string[][] = [
   ],
   [
     "zephyr-kernel",
-    "18_community_contribution"
+    "18_data_passing"
+  ],
+  [
+    "zephyr-kernel",
+    "19_input_subsystem"
+  ],
+  [
+    "zephyr-kernel",
+    "20_sensor_subsystem"
+  ],
+  [
+    "zephyr-kernel",
+    "21_community_contribution"
   ],
   [
     "zephyr-kernel"

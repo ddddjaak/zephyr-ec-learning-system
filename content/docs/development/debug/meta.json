@@ -6,6 +6,7 @@
     "03_exception_and_crash_analysis",
     "04_functional_verification",
     "05_faq_and_troubleshooting",
-    "06_test_framework"
+    "06_test_framework",
+    "07_coredump"
   ]
 }

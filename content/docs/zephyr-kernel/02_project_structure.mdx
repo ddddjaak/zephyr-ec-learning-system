@@ -718,6 +718,53 @@ west build -b nrf52840dk_nrf52840
 west build -b nrf52840dk_nrf52840 -- -DCONFIG_LOG_DEFAULT_LEVEL=4
 ```
 
+## 构建扩展：Sysbuild、Snippets 与板级修订
+
+以上是单镜像应用的完整图景。三个构建层扩展（按 v3.7.0 状态核实）覆盖更复杂的工程形态。
+
+### Sysbuild：一次构建多个镜像
+
+sysbuild（v3.3 引入主线）把"一次 `west build` 产出多个镜像"组织起来——EC 固件 + MCUboot + 自定义辅助镜像的构建都是它的用武之地。**v3.7.0 中 sysbuild 仍是 opt-in**：显式加 `--sysbuild` 开启（可 `west config build.sysbuild True` 设为个人默认，`--no-sysbuild` 显式关闭）。
+
+```bash
+# 一键构建 app + MCUboot 双镜像
+west build --sysbuild -b <board> app -- \
+  -DSB_CONFIG_BOOTLOADER_MCUBOOT=y
+```
+
+命名空间规则（易混淆点）：
+
+| 传参 | 作用对象 |
+|------|----------|
+| `-DSB_CONFIG_<VAR>=<值>` | sysbuild 自身的 Kconfig（如 `SB_CONFIG_BOOTLOADER_MCUBOOT`） |
+| `-D<镜像名>_CONFIG_<VAR>=<值>` | 指定镜像的 Kconfig（如 `-Dmcuboot_CONFIG_LOG=n`） |
+| `-D<镜像名>_<VAR>=<值>` | 指定镜像的 CMake 变量 |
+| `-DSB_CONF_FILE=<file>.conf` | sysbuild 层专用配置文件 |
+
+镜像间关系在应用的 `sysbuild.cmake` 里声明（`ExternalZephyrProject_Add(APPLICATION <名> SOURCE_DIR <路径>)` 添加自定义镜像），产物关系记录在构建生成的 `domains.yaml`；menuconfig 目标带镜像前缀（`ninja mcuboot_menuconfig`）。MCUboot 签名启动的整体工程见 [安全与合规](/docs/zephyr-kernel/11_security) 与 [固件更新模块](/docs/development/modules/08_security_and_firmware_update)。
+
+### Snippets：跨平台的配置片段（v3.7 新特性）
+
+snippet 是 **3.7.0 新增**的机制：把"一组常见配置"（Kconfig 片段 + DT overlay + CMake 变量）打包成一个名字，跨应用/跨平台复用——"串口控制台走 RTT"、"console 用 CDC ACM"这类样板配置再也不用每个项目抄一遍。
+
+```bash
+west build -b <board> app -S ram-console            # 携带一个 snippet
+west build -b <board> app -S ram-console -S rtt-console  # 多个叠加
+```
+
+每个 snippet 定义在一个 `snippet.yml`（搜索位置：zephyr 仓库 `snippets/`、应用 `snippets/` 目录，或模块声明的 `snippet_root`）。叠加语义：设置键是 `append`（追加 `EXTRA_CONF_FILE`/`EXTRA_DTC_OVERLAY_FILE` 等），`boards:` 段可按板名或正则限定板级设置且与通用设置**叠加**（不是替换）；处理顺序即 `-S` 顺序，**同名设置后处理的获胜**。v3.7.0 内置：`ram-console`、`rtt-console`、`cdc-acm-console`、`nus-console` 等。
+
+### 板级修订：board.yml 与 `@revision`
+
+一块板多次改版（换了个引脚、加了传感器）不必建新板名——用修订版本区分：
+
+```bash
+west build -b csce250x_evb@2.0.0 app
+# 配置输出会打印实际选用的修订：-- Board: csce250x_evb, Revision: 2.0.0 (Active: 2.0.0)
+```
+
+**v3.7.0 的修订定义在板目录的 `board.yml`**（`revision:` 条目，支持 `major.minor.patch`、字母、数字等格式，`exact: true` 可关闭模糊匹配）——不是 `board.cmake`（v3.7 中它只管 flash/debug runner）。默认开启**模糊匹配**：未定义的中间修订号自动落到 ≤ 它的最近定义（定义了 1.0.0/3.0.0 时 `@2.5.0` 实际用 1.0.0）。修订专属文件按命名规则自动叠加：`<board>_2_0_0_defconfig`、`<board>_2_0_0.overlay`——改版差异收敛在文件名里，主 defconfig/overlay 保持干净。
+
 ## 实践示例：完整项目
 
 让我们创建一个完整的传感器数据采集项目。
