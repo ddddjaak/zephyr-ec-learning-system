@@ -182,7 +182,31 @@ K_THREAD_DEFINE(low_thread, 1024, low_priority_task,
 使用互斥锁（Mutex）可以自动处理优先级继承，避免此问题。
 :::
 
-### 1.4 线程栈管理
+### 1.4 调度算法与时间片
+
+优先级决定"谁先跑"，调度算法决定"同优先级怎么排、多优先级怎么找下一个"。v3.7.0 的选择（`kernel/Kconfig`，符号已核实）：
+
+| Kconfig | 就绪队列实现 | 取舍 | 默认 |
+|---------|-------------|------|------|
+| `CONFIG_SCHED_DUMB` | 简单无序链表 | 代码量最小、单线程场景常数时间；线程多时选择开销线性增长 | ✅ 默认 |
+| `CONFIG_SCHED_MULTIQ` | 每优先级一个队列 + 红黑树 | 线程数多时选择更快，代码量略大 | — |
+| `CONFIG_SCHED_SCALABLE` | dlist + 扫描树 | 为大量线程设计 | — |
+| `CONFIG_SCHED_DEADLINE` | 在 DUMB 之上加 EDF（最早截止期优先） | 线程可带 deadline 字段参与调度；depends on SCHED_DUMB | — |
+
+**EC 结论**：线程数在几十以内的 EC 固件，默认 `SCHED_DUMB` 就是最优解——不要为"性能"换算法；`SCHED_DEADLINE` 只在出现"硬截止期"需求（如音频/无线协议栈）时引入。
+
+时间片只作用于**同优先级的抢占式线程之间**（默认轮转，协作式线程与高优先级线程永不被时间片打断）：
+
+| Kconfig | 含义 | 默认 |
+|---------|------|------|
+| `CONFIG_TIMESLICING` | 开启同优先级时间片轮转 | y |
+| `CONFIG_TIMESLICE_SIZE` | 时间片长度（ms） | 20 |
+| `CONFIG_TIMESLICE_PRIORITY` | 限制轮转的优先级上限 | — |
+| `CONFIG_TIMESLICE_PER_THREAD` | 允许单线程覆盖时间片 | — |
+
+**EC 用法**：EC 线程几乎都设计成不同优先级（调度关系显式化），同优先级轮转是"线程设计失败的兜底"——如果发现依赖时间片才能跑的业务，优先重排优先级而不是调时间片。元优先级（Meta IRQ，`CONFIG_NUM_METAIRQ_PRIORITIES`，默认 1 个）是最高层的"协作式但可打断一切"线程，仅用于把事件从 ISR 搬给处理线程的极短路径——普通业务线程不要用。
+
+### 1.5 线程栈管理
 
 每个线程都需要独立的栈空间。正确配置栈大小对系统稳定性至关重要。
 
@@ -238,7 +262,7 @@ void check_stack_usage(void)
 }
 ```
 
-### 1.5 多线程示例：不同优先级线程
+### 1.6 多线程示例：不同优先级线程
 
 ```c
 #include <zephyr/kernel.h>
